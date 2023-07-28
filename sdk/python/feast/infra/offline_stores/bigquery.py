@@ -558,16 +558,16 @@ class BigQueryRetrievalJob(RetrievalJob):
                 "offline store when executing `to_remote_storage()`"
             )
 
-        logging.info(f"{self._gcs_path}")
+        logging.info(f"{self._gcs_path=}")
 
         table = self.to_bigquery()
 
-        logging.info(f"{table}")
+        logging.info(f"{table=}")
 
         job_config = bigquery.job.ExtractJobConfig()
         job_config.destination_format = "PARQUET"
 
-        logging.info(f"{job_config}")
+        logging.info(f"{job_config=}")
 
         extract_job = self.client.extract_table(
             table,
@@ -588,21 +588,21 @@ class BigQueryRetrievalJob(RetrievalJob):
         if prefix.startswith("/"):
             prefix = prefix[1:]
 
-        logging.info(f"{bucket}")
-        logging.info(f"{prefix}")
+        logging.info(f"{bucket=}")
+        logging.info(f"{prefix=}")
 
         blobs = storage_client.list_blobs(bucket, prefix=prefix)
 
-        logging.info(f"{blobs}")
+        logging.info(f"{blobs=}")
 
         results = []
         for b in blobs:
-            logging.info(f"{b}")
-            logging.info(f"{b.bucket.name}")
-            logging.info(f"{b.name}")
+            logging.info(f"{b=}")
+            logging.info(f"{b.bucket.name=}")
+            logging.info(f"{b.name=}")
             results.append(f"gs://{b.bucket.name}/{b.name}")
 
-        logging.info(f"{results}")
+        logging.info(f"{results=}")
         return results
 
 
