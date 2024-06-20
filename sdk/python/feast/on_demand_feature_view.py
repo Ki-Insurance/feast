@@ -125,9 +125,10 @@ class OnDemandFeatureView(BaseFeatureView):
         self.mode = mode.lower()
 
         if self.mode not in {"python", "pandas", "substrait"}:
-            raise ValueError(
-                f"Unknown mode {self.mode}. OnDemandFeatureView only supports python or pandas UDFs and substrait."
-            )
+            self.mode = "pandas"
+            # raise ValueError(
+            #     f"Unknown mode {self.mode}. OnDemandFeatureView only supports python or pandas UDFs and substrait."
+            # )
 
         if not feature_transformation:
             if udf:
