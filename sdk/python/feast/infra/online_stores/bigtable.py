@@ -339,26 +339,30 @@ class BigtableOnlineStore(OnlineStore):
     ):
         rows = []
         for entity_key, features, timestamp, created_ts in rows_to_write:
-            bt_row = bt_table.direct_row(
-                self._compute_row_key(
-                    entity_key=entity_key,
-                    feature_view_name=feature_view_name,
-                    config=config,
+            try:
+                bt_row = bt_table.direct_row(
+                    self._compute_row_key(
+                        entity_key=entity_key,
+                        feature_view_name=feature_view_name,
+                        config=config,
+                    )
                 )
-            )
 
-            for feature_name, feature_value in features.items():
+                for feature_name, feature_value in features.items():
+                    bt_row.set_cell(
+                        self.feature_column_family,
+                        feature_name.encode(),
+                        feature_value.SerializeToString(),
+                    )
                 bt_row.set_cell(
                     self.feature_column_family,
-                    feature_name.encode(),
-                    feature_value.SerializeToString(),
+                    b"event_ts",
+                    utils.make_tzaware(timestamp).isoformat().encode(),
                 )
-            bt_row.set_cell(
-                self.feature_column_family,
-                b"event_ts",
-                utils.make_tzaware(timestamp).isoformat().encode(),
-            )
-            rows.append(bt_row)
+                rows.append(bt_row)
+            except ValueError as e:
+                logger.warning("Data serializing error was thrown", exc_info=True)
+            
         bt_table.mutate_rows(rows)
 
         if progress:
