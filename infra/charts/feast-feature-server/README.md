@@ -1,6 +1,6 @@
 # Feast Python / Go Feature Server Helm Charts
 
-Current chart version is `0.39.0`
+Current chart version is `0.41.3`
 
 ## Installation
 
@@ -40,10 +40,14 @@ See [here](https://github.com/feast-dev/feast/tree/master/examples/python-helm-d
 | fullnameOverride | string | `""` |  |
 | image.pullPolicy | string | `"IfNotPresent"` |  |
 | image.repository | string | `"feastdev/feature-server"` | Docker image for Feature Server repository |
-| image.tag | string | `"0.39.0"` | The Docker image tag (can be overwritten if custom feature server deps are needed for on demand transforms) |
+| image.tag | string | `"0.41.3"` | The Docker image tag (can be overwritten if custom feature server deps are needed for on demand transforms) |
 | imagePullSecrets | list | `[]` |  |
 | livenessProbe.initialDelaySeconds | int | `30` |  |
 | livenessProbe.periodSeconds | int | `30` |  |
+| logLevel | string | `"WARNING"` |  |
+| metrics.enabled | bool | `false` |  |
+| metrics.otelCollector.endpoint | string | `""` |  |
+| metrics.otelCollector.port | int | `4317` |  |
 | nameOverride | string | `""` |  |
 | nodeSelector | object | `{}` |  |
 | podAnnotations | object | `{}` |  |
@@ -55,4 +59,5 @@ See [here](https://github.com/feast-dev/feast/tree/master/examples/python-helm-d
 | securityContext | object | `{}` |  |
 | service.port | int | `80` |  |
 | service.type | string | `"ClusterIP"` |  |
+| serviceAccount.name | string | `""` |  |
 | tolerations | list | `[]` |  |

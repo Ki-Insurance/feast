@@ -155,13 +155,15 @@ def python_type_to_feast_value_type(
         "uint16": ValueType.INT32,
         "uint8": ValueType.INT32,
         "int8": ValueType.INT32,
+        "bool_": ValueType.BOOL,  # np.bool_
         "bool": ValueType.BOOL,
         "boolean": ValueType.BOOL,
         "timedelta": ValueType.UNIX_TIMESTAMP,
         "timestamp": ValueType.UNIX_TIMESTAMP,
         "datetime": ValueType.UNIX_TIMESTAMP,
         "datetime64[ns]": ValueType.UNIX_TIMESTAMP,
-        "datetime64[ns, tz]": ValueType.UNIX_TIMESTAMP,
+        "datetime64[ns, tz]": ValueType.UNIX_TIMESTAMP,  # special dtype of pandas
+        "datetime64[ns, utc]": ValueType.UNIX_TIMESTAMP,
         "category": ValueType.STRING,
     }
 
@@ -370,11 +372,18 @@ def _python_value_to_proto_value(
                 if feast_value_type == ValueType.BYTES_LIST:
                     raise _type_err(sample, ValueType.BYTES_LIST)
 
-                json_value = json.loads(sample)
-                if isinstance(json_value, list):
+                json_sample = json.loads(sample)
+                if isinstance(json_sample, list):
+                    json_values = [json.loads(value) for value in values]
                     if feast_value_type == ValueType.BOOL_LIST:
-                        json_value = [bool(item) for item in json_value]
-                    return [ProtoValue(**{field_name: proto_type(val=json_value)})]  # type: ignore
+                        json_values = [
+                            [bool(item) for item in list_item]
+                            for list_item in json_values
+                        ]
+                    return [
+                        ProtoValue(**{field_name: proto_type(val=v)})  # type: ignore
+                        for v in json_values
+                    ]
                 raise _type_err(sample, valid_types[0])
 
             if sample is not None and not all(
@@ -394,13 +403,18 @@ def _python_value_to_proto_value(
                         raise _type_err(item, valid_types[0])
 
             if feast_value_type == ValueType.UNIX_TIMESTAMP_LIST:
-                int_timestamps_lists = (
-                    _python_datetime_to_int_timestamp(value) for value in values
-                )
                 return [
-                    # ProtoValue does actually accept `np.int_` but the typing complains.
-                    ProtoValue(unix_timestamp_list_val=Int64List(val=ts))  # type: ignore
-                    for ts in int_timestamps_lists
+                    (
+                        # ProtoValue does actually accept `np.int_` but the typing complains.
+                        ProtoValue(
+                            unix_timestamp_list_val=Int64List(
+                                val=_python_datetime_to_int_timestamp(value)  # type: ignore
+                            )
+                        )
+                        if value is not None
+                        else ProtoValue()
+                    )
+                    for value in values
                 ]
             if feast_value_type == ValueType.BOOL_LIST:
                 # ProtoValue does not support conversion of np.bool_ so we need to convert it to support np.bool_.
@@ -499,7 +513,14 @@ def python_values_to_proto_values(
     if value_type == ValueType.UNKNOWN:
         raise TypeError("Couldn't infer value type from empty value")
 
-    return _python_value_to_proto_value(value_type, values)
+    proto_values = _python_value_to_proto_value(value_type, values)
+
+    if len(proto_values) != len(values):
+        raise ValueError(
+            f"Number of proto values {len(proto_values)} does not match number of values {len(values)}"
+        )
+
+    return proto_values
 
 
 def _proto_value_to_value_type(proto_value: ProtoValue) -> ValueType:
@@ -552,6 +573,7 @@ def pa_to_feast_value_type(pa_type_as_str: str) -> ValueType:
             "binary": ValueType.BYTES,
             "bool": ValueType.BOOL,
             "null": ValueType.NULL,
+            "list<element: double>": ValueType.DOUBLE_LIST,
         }
         value_type = type_map[pa_type_as_str]
 
@@ -599,7 +621,9 @@ def mssql_to_feast_value_type(mssql_type_as_str: str) -> ValueType:
         "char": ValueType.STRING,
         "date": ValueType.UNIX_TIMESTAMP,
         "datetime": ValueType.UNIX_TIMESTAMP,
+        "datetimeoffset": ValueType.UNIX_TIMESTAMP,
         "float": ValueType.FLOAT,
+        "int": ValueType.INT32,
         "nchar": ValueType.STRING,
         "nvarchar": ValueType.STRING,
         "nvarchar(max)": ValueType.STRING,

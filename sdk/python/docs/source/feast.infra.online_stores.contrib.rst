@@ -12,7 +12,6 @@ Subpackages
    feast.infra.online_stores.contrib.hbase_online_store
    feast.infra.online_stores.contrib.ikv_online_store
    feast.infra.online_stores.contrib.mysql_online_store
-   feast.infra.online_stores.contrib.rockset_online_store
 
 Submodules
 ----------
@@ -85,6 +84,14 @@ feast.infra.online\_stores.contrib.postgres\_repo\_configuration module
 -----------------------------------------------------------------------
 
 .. automodule:: feast.infra.online_stores.contrib.postgres_repo_configuration
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+feast.infra.online\_stores.contrib.singlestore\_repo\_configuration module
+--------------------------------------------------------------------------
+
+.. automodule:: feast.infra.online_stores.contrib.singlestore_repo_configuration
    :members:
    :undoc-members:
    :show-inheritance:

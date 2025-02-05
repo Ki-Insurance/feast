@@ -6,18 +6,22 @@ import logging
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-import pytz
 from elasticsearch import Elasticsearch, helpers
 
 from feast import Entity, FeatureView, RepoConfig
-from feast.infra.key_encoding_utils import get_list_val_str, serialize_entity_key
+from feast.infra.key_encoding_utils import (
+    get_list_val_str,
+    serialize_entity_key,
+)
 from feast.infra.online_stores.online_store import OnlineStore
+from feast.infra.online_stores.vector_store import VectorStoreConfig
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import FeastConfigBaseModel
+from feast.utils import _build_retrieve_online_document_record, to_naive_utc
 
 
-class ElasticSearchOnlineStoreConfig(FeastConfigBaseModel):
+class ElasticSearchOnlineStoreConfig(FeastConfigBaseModel, VectorStoreConfig):
     """
     Configuration for the ElasticSearch online store.
     NOTE: The class *must* end with the `OnlineStoreConfig` suffix.
@@ -34,13 +38,6 @@ class ElasticSearchOnlineStoreConfig(FeastConfigBaseModel):
 
     # The number of rows to write in a single batch
     write_batch_size: Optional[int] = 40
-
-    # The length of the vector value
-    vector_len: Optional[int] = 512
-
-    # The vector similarity metric to use in KNN search
-    # more details: https://www.elastic.co/guide/en/elasticsearch/reference/current/dense-vector.html
-    similarity: Optional[str] = "cosine"
 
 
 class ElasticSearchOnlineStore(OnlineStore):
@@ -96,9 +93,9 @@ class ElasticSearchOnlineStore(OnlineStore):
                 entity_key_serialization_version=config.entity_key_serialization_version,
             )
             encoded_entity_key = base64.b64encode(entity_key_bin).decode("utf-8")
-            timestamp = _to_naive_utc(timestamp)
+            timestamp = to_naive_utc(timestamp)
             if created_ts is not None:
-                created_ts = _to_naive_utc(created_ts)
+                created_ts = to_naive_utc(created_ts)
             for feature_name, value in values.items():
                 encoded_value = base64.b64encode(value.SerializeToString()).decode(
                     "utf-8"
@@ -224,6 +221,7 @@ class ElasticSearchOnlineStore(OnlineStore):
     ) -> List[
         Tuple[
             Optional[datetime],
+            Optional[EntityKeyProto],
             Optional[ValueProto],
             Optional[ValueProto],
             Optional[ValueProto],
@@ -232,6 +230,7 @@ class ElasticSearchOnlineStore(OnlineStore):
         result: List[
             Tuple[
                 Optional[datetime],
+                Optional[EntityKeyProto],
                 Optional[ValueProto],
                 Optional[ValueProto],
                 Optional[ValueProto],
@@ -247,30 +246,21 @@ class ElasticSearchOnlineStore(OnlineStore):
         )
         rows = response["hits"]["hits"][0:top_k]
         for row in rows:
+            entity_key = row["_source"]["entity_key"]
             feature_value = row["_source"]["feature_value"]
             vector_value = row["_source"]["vector_value"]
             timestamp = row["_source"]["timestamp"]
             distance = row["_score"]
             timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%f")
 
-            feature_value_proto = ValueProto()
-            feature_value_proto.ParseFromString(base64.b64decode(feature_value))
-
-            vector_value_proto = ValueProto(string_val=str(vector_value))
-            distance_value_proto = ValueProto(float_val=distance)
             result.append(
-                (
+                _build_retrieve_online_document_record(
+                    entity_key,
+                    base64.b64decode(feature_value),
+                    str(vector_value),
+                    distance,
                     timestamp,
-                    feature_value_proto,
-                    vector_value_proto,
-                    distance_value_proto,
+                    config.entity_key_serialization_version,
                 )
             )
         return result
-
-
-def _to_naive_utc(ts: datetime):
-    if ts.tzinfo is None:
-        return ts
-    else:
-        return ts.astimezone(pytz.utc).replace(tzinfo=None)

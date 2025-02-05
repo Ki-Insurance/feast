@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import os
 import time
@@ -22,6 +21,7 @@ from feast.field import Field
 from feast.infra.utils.postgres.postgres_config import ConnectionType
 from feast.online_response import TIMESTAMP_POSTFIX
 from feast.types import Float32, Int32, String
+from feast.utils import _utc_now
 from feast.wait import wait_retry_backoff
 from tests.integration.feature_repos.repo_configuration import (
     Environment,
@@ -39,13 +39,18 @@ from tests.utils.data_source_test_creator import prep_file_source
 
 @pytest.mark.integration
 @pytest.mark.universal_online_stores(only=["postgres"])
+@pytest.mark.parametrize(
+    "conn_type",
+    [ConnectionType.singleton, ConnectionType.pool],
+    ids=lambda v: f"conn_type:{v}",
+)
 def test_connection_pool_online_stores(
-    environment, universal_data_sources, fake_ingest_data
+    environment, universal_data_sources, fake_ingest_data, conn_type
 ):
     if os.getenv("FEAST_IS_LOCAL_TEST", "False") == "True":
         return
     fs = environment.feature_store
-    fs.config.online_store.conn_type = ConnectionType.pool
+    fs.config.online_store.conn_type = conn_type
     fs.config.online_store.min_conn = 1
     fs.config.online_store.max_conn = 10
 
@@ -131,9 +136,9 @@ def test_write_to_online_store_event_check(environment):
     fs = environment.feature_store
 
     # write same data points 3 with different timestamps
-    now = pd.Timestamp(datetime.datetime.utcnow()).round("ms")
-    hour_ago = pd.Timestamp(datetime.datetime.utcnow() - timedelta(hours=1)).round("ms")
-    latest = pd.Timestamp(datetime.datetime.utcnow() + timedelta(seconds=1)).round("ms")
+    now = pd.Timestamp(_utc_now()).round("ms")
+    hour_ago = pd.Timestamp(_utc_now() - timedelta(hours=1)).round("ms")
+    latest = pd.Timestamp(_utc_now() + timedelta(seconds=1)).round("ms")
 
     data = {
         "id": [123, 567, 890],
@@ -157,7 +162,6 @@ def test_write_to_online_store_event_check(environment):
         fs.apply([fv1, e])
         assert len(fs.list_all_feature_views(tags=TAGS)) == 1
         assert len(fs.list_feature_views(tags=TAGS)) == 1
-        assert len(fs.list_batch_feature_views(tags=TAGS)) == 1
 
         #  data to ingest into Online Store (recent)
         data = {
@@ -216,7 +220,7 @@ def test_write_to_online_store_event_check(environment):
         # writes to online store via datasource (dataframe_source) materialization
         fs.materialize(
             start_date=datetime.datetime.now() - timedelta(hours=12),
-            end_date=datetime.datetime.utcnow(),
+            end_date=_utc_now(),
         )
 
         df = fs.get_online_features(
@@ -245,8 +249,8 @@ def test_write_to_online_store(environment, universal_data_sources):
         "conv_rate": [0.85],
         "acc_rate": [0.91],
         "avg_daily_trips": [14],
-        "event_timestamp": [pd.Timestamp(datetime.datetime.utcnow()).round("ms")],
-        "created": [pd.Timestamp(datetime.datetime.utcnow()).round("ms")],
+        "event_timestamp": [pd.Timestamp(_utc_now()).round("ms")],
+        "created": [pd.Timestamp(_utc_now()).round("ms")],
     }
     df_data = pd.DataFrame(data)
 
@@ -415,7 +419,7 @@ def setup_feature_store_universal_feature_views(
     feature_views = construct_universal_feature_views(data_sources)
 
     fs.apply([driver(), feature_views.driver, feature_views.global_fv])
-    assert len(fs.list_batch_feature_views(TAGS)) == 2
+    assert len(fs.list_all_feature_views(TAGS)) == 2
 
     data = {
         "driver_id": [1, 2],
@@ -481,28 +485,41 @@ def test_online_retrieval_with_event_timestamps(environment, universal_data_sour
     assert_feature_store_universal_feature_views_response(df)
 
 
-@pytest.mark.integration
-@pytest.mark.universal_online_stores(only=["redis", "dynamodb"])
-def test_async_online_retrieval_with_event_timestamps(
-    environment, universal_data_sources
-):
+async def _do_async_retrieval_test(environment, universal_data_sources):
     fs = setup_feature_store_universal_feature_views(
         environment, universal_data_sources
     )
+    await fs.initialize()
 
-    response = asyncio.run(
-        fs.get_online_features_async(
-            features=[
-                "driver_stats:avg_daily_trips",
-                "driver_stats:acc_rate",
-                "driver_stats:conv_rate",
-            ],
-            entity_rows=[{"driver_id": 1}, {"driver_id": 2}],
-        )
+    response = await fs.get_online_features_async(
+        features=[
+            "driver_stats:avg_daily_trips",
+            "driver_stats:acc_rate",
+            "driver_stats:conv_rate",
+        ],
+        entity_rows=[{"driver_id": 1}, {"driver_id": 2}],
     )
     df = response.to_df(True)
 
     assert_feature_store_universal_feature_views_response(df)
+
+    await fs.close()
+
+
+@pytest.mark.integration
+@pytest.mark.universal_online_stores(only=["redis", "postgres"])
+async def test_async_online_retrieval_with_event_timestamps(
+    environment, universal_data_sources
+):
+    await _do_async_retrieval_test(environment, universal_data_sources)
+
+
+@pytest.mark.integration
+@pytest.mark.universal_online_stores(only=["dynamodb"])
+async def test_async_online_retrieval_with_event_timestamps_dynamo(
+    environment, universal_data_sources
+):
+    await _do_async_retrieval_test(environment, universal_data_sources)
 
 
 @pytest.mark.integration
@@ -512,7 +529,7 @@ def test_online_list_retrieval(environment, universal_data_sources):
         environment, universal_data_sources
     )
 
-    assert len(fs.list_batch_feature_views(tags=TAGS)) == 2
+    assert len(fs.list_all_feature_views(tags=TAGS)) == 2
 
 
 @pytest.mark.integration
@@ -841,8 +858,8 @@ def assert_feature_service_entity_mapping_correctness(
 
 @pytest.mark.integration
 @pytest.mark.universal_online_stores(only=["pgvector", "elasticsearch"])
-def test_retrieve_online_documents(environment, fake_document_data):
-    fs = environment.feature_store
+def test_retrieve_online_documents(vectordb_environment, fake_document_data):
+    fs = vectordb_environment.feature_store
     df, data_source = fake_document_data
     item_embeddings_feature_view = create_item_embeddings_feature_view(data_source)
     fs.apply([item_embeddings_feature_view, item()])
@@ -855,6 +872,9 @@ def test_retrieve_online_documents(environment, fake_document_data):
         distance_metric="L2",
     ).to_dict()
     assert len(documents["embedding_float"]) == 2
+
+    # assert returned the entity_id
+    assert len(documents["item_id"]) == 2
 
     documents = fs.retrieve_online_documents(
         feature="item_embeddings:embedding_float",

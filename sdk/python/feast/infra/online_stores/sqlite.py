@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import itertools
+import logging
 import os
 import sqlite3
 import struct
@@ -20,7 +21,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
-import sqlite_vec
 from google.protobuf.internal.containers import RepeatedScalarFieldContainer
 from pydantic import StrictStr
 
@@ -29,17 +29,17 @@ from feast.feature_view import FeatureView
 from feast.infra.infra_object import SQLITE_INFRA_OBJECT_CLASS_TYPE, InfraObject
 from feast.infra.key_encoding_utils import serialize_entity_key
 from feast.infra.online_stores.online_store import OnlineStore
+from feast.infra.online_stores.vector_store import VectorStoreConfig
 from feast.protos.feast.core.InfraObject_pb2 import InfraObject as InfraObjectProto
 from feast.protos.feast.core.Registry_pb2 import Registry as RegistryProto
 from feast.protos.feast.core.SqliteTable_pb2 import SqliteTable as SqliteTableProto
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
-from feast.protos.feast.types.Value_pb2 import FloatList as FloatListProto
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
-from feast.utils import to_naive_utc
+from feast.utils import _build_retrieve_online_document_record, to_naive_utc
 
 
-class SqliteOnlineStoreConfig(FeastConfigBaseModel):
+class SqliteOnlineStoreConfig(FeastConfigBaseModel, VectorStoreConfig):
     """Online store config for local (SQLite-based) store"""
 
     type: Literal["sqlite", "feast.infra.online_stores.sqlite.SqliteOnlineStore"] = (
@@ -49,12 +49,6 @@ class SqliteOnlineStoreConfig(FeastConfigBaseModel):
 
     path: StrictStr = "data/online.db"
     """ (optional) Path to sqlite db """
-
-    vec_enabled: Optional[bool] = False
-    """ (optional) Enable or disable sqlite-vss for vector search"""
-
-    vector_len: Optional[int] = 512
-    """ (optional) Length of the vector to be stored in the database"""
 
 
 class SqliteOnlineStore(OnlineStore):
@@ -84,7 +78,9 @@ class SqliteOnlineStore(OnlineStore):
         if not self._conn:
             db_path = self._get_db_path(config)
             self._conn = _initialize_conn(db_path)
-            if sys.version_info[0:2] == (3, 10):
+            if sys.version_info[0:2] == (3, 10) and config.online_store.vector_enabled:
+                import sqlite_vec  # noqa: F401
+
                 self._conn.enable_load_extension(True)  # type: ignore
                 sqlite_vec.load(self._conn)
 
@@ -120,7 +116,7 @@ class SqliteOnlineStore(OnlineStore):
 
                 table_name = _table_id(project, table)
                 for feature_name, val in values.items():
-                    if config.online_store.vec_enabled:
+                    if config.online_store.vector_enabled:
                         vector_bin = serialize_f32(
                             val.float_list_val.val, config.online_store.vector_len
                         )  # type: ignore
@@ -301,6 +297,7 @@ class SqliteOnlineStore(OnlineStore):
     ) -> List[
         Tuple[
             Optional[datetime],
+            Optional[EntityKeyProto],
             Optional[ValueProto],
             Optional[ValueProto],
             Optional[ValueProto],
@@ -319,7 +316,7 @@ class SqliteOnlineStore(OnlineStore):
         """
         project = config.project
 
-        if not config.online_store.vec_enabled:
+        if not config.online_store.vector_enabled:
             raise ValueError("sqlite-vss is not enabled in the online store config")
 
         conn = self._get_conn(config)
@@ -383,6 +380,7 @@ class SqliteOnlineStore(OnlineStore):
         result: List[
             Tuple[
                 Optional[datetime],
+                Optional[EntityKeyProto],
                 Optional[ValueProto],
                 Optional[ValueProto],
                 Optional[ValueProto],
@@ -390,19 +388,14 @@ class SqliteOnlineStore(OnlineStore):
         ] = []
 
         for entity_key, _, string_value, distance, event_ts in rows:
-            feature_value_proto = ValueProto()
-            feature_value_proto.ParseFromString(string_value if string_value else b"")
-            vector_value_proto = ValueProto(
-                float_list_val=FloatListProto(val=embedding)
-            )
-            distance_value_proto = ValueProto(float_val=distance)
-
             result.append(
-                (
+                _build_retrieve_online_document_record(
+                    entity_key,
+                    string_value if string_value else b"",
+                    embedding,
+                    distance,
                     event_ts,
-                    feature_value_proto,
-                    vector_value_proto,
-                    distance_value_proto,
+                    config.entity_key_serialization_version,
                 )
             )
 
@@ -410,6 +403,10 @@ class SqliteOnlineStore(OnlineStore):
 
 
 def _initialize_conn(db_path: str):
+    try:
+        import sqlite_vec  # noqa: F401
+    except ModuleNotFoundError:
+        logging.warning("Cannot use sqlite_vec for vector search")
     Path(db_path).parent.mkdir(exist_ok=True)
     return sqlite3.connect(
         db_path,
@@ -482,8 +479,13 @@ class SqliteTable(InfraObject):
 
     def update(self):
         if sys.version_info[0:2] == (3, 10):
-            self.conn.enable_load_extension(True)
-            sqlite_vec.load(self.conn)
+            try:
+                import sqlite_vec  # noqa: F401
+
+                self.conn.enable_load_extension(True)
+                sqlite_vec.load(self.conn)
+            except ModuleNotFoundError:
+                logging.warning("Cannot use sqlite_vec for vector search")
         self.conn.execute(
             f"CREATE TABLE IF NOT EXISTS {self.name} (entity_key BLOB, feature_name TEXT, value BLOB, vector_value BLOB, event_ts timestamp, created_ts timestamp,  PRIMARY KEY(entity_key, feature_name))"
         )

@@ -1,13 +1,25 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import pandas as pd
 import pyarrow
 from tqdm import tqdm
 
 from feast import FeatureService, errors
+from feast.base_feature_view import BaseFeatureView
 from feast.data_source import DataSource
 from feast.entity import Entity
 from feast.feature_view import FeatureView
@@ -15,17 +27,21 @@ from feast.importer import import_class
 from feast.infra.infra_object import Infra
 from feast.infra.offline_stores.offline_store import RetrievalJob
 from feast.infra.registry.base_registry import BaseRegistry
+from feast.infra.supported_async_methods import ProviderAsyncMethods
+from feast.on_demand_feature_view import OnDemandFeatureView
+from feast.online_response import OnlineResponse
 from feast.protos.feast.core.Registry_pb2 import Registry as RegistryProto
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
+from feast.protos.feast.types.Value_pb2 import RepeatedValue
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import RepoConfig
 from feast.saved_dataset import SavedDataset
 
 PROVIDERS_CLASS_FOR_TYPE = {
-    "gcp": "feast.infra.gcp.GcpProvider",
-    "aws": "feast.infra.aws.AwsProvider",
-    "local": "feast.infra.local.LocalProvider",
-    "azure": "feast.infra.contrib.azure_provider.AzureProvider",
+    "gcp": "feast.infra.passthrough_provider.PassthroughProvider",
+    "aws": "feast.infra.passthrough_provider.PassthroughProvider",
+    "local": "feast.infra.passthrough_provider.PassthroughProvider",
+    "azure": "feast.infra.passthrough_provider.PassthroughProvider",
 }
 
 
@@ -40,12 +56,16 @@ class Provider(ABC):
     def __init__(self, config: RepoConfig):
         pass
 
+    @property
+    def async_supported(self) -> ProviderAsyncMethods:
+        return ProviderAsyncMethods()
+
     @abstractmethod
     def update_infra(
         self,
         project: str,
         tables_to_delete: Sequence[FeatureView],
-        tables_to_keep: Sequence[FeatureView],
+        tables_to_keep: Sequence[Union[FeatureView, OnDemandFeatureView]],
         entities_to_delete: Sequence[Entity],
         entities_to_keep: Sequence[Entity],
         partial: bool,
@@ -121,10 +141,37 @@ class Provider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def online_write_batch_async(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        data: List[
+            Tuple[EntityKeyProto, Dict[str, ValueProto], datetime, Optional[datetime]]
+        ],
+        progress: Optional[Callable[[int], Any]],
+    ) -> None:
+        """
+        Writes a batch of feature rows to the online store asynchronously.
+
+        If a tz-naive timestamp is passed to this method, it is assumed to be UTC.
+
+        Args:
+            config: The config for the current feature store.
+            table: Feature view to which these feature rows correspond.
+            data: A list of quadruplets containing feature data. Each quadruplet contains an entity
+                key, a dict containing feature values, an event timestamp for the row, and the created
+                timestamp for the row if it exists.
+            progress: Function to be called once a batch of rows is written to the online store, used
+                to show progress.
+        """
+        pass
+
     def ingest_df(
         self,
-        feature_view: FeatureView,
+        feature_view: Union[BaseFeatureView, FeatureView, OnDemandFeatureView],
         df: pd.DataFrame,
+        field_mapping: Optional[Dict] = None,
     ):
         """
         Persists a dataframe to the online store.
@@ -132,6 +179,23 @@ class Provider(ABC):
         Args:
             feature_view: The feature view to which the dataframe corresponds.
             df: The dataframe to be persisted.
+            field_mapping: A dictionary mapping dataframe column names to feature names.
+        """
+        pass
+
+    async def ingest_df_async(
+        self,
+        feature_view: Union[BaseFeatureView, FeatureView, OnDemandFeatureView],
+        df: pd.DataFrame,
+        field_mapping: Optional[Dict] = None,
+    ):
+        """
+        Persists a dataframe to the online store asynchronously.
+
+        Args:
+            feature_view: The feature view to which the dataframe corresponds.
+            df: The dataframe to be persisted.
+            field_mapping: A dictionary mapping dataframe column names to feature names.
         """
         pass
 
@@ -228,6 +292,36 @@ class Provider(ABC):
             item is the event timestamp for the row, and the second item is a dict mapping feature names
             to values, which are returned in proto format.
         """
+        pass
+
+    @abstractmethod
+    def get_online_features(
+        self,
+        config: RepoConfig,
+        features: Union[List[str], FeatureService],
+        entity_rows: Union[
+            List[Dict[str, Any]],
+            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
+        ],
+        registry: BaseRegistry,
+        project: str,
+        full_feature_names: bool = False,
+    ) -> OnlineResponse:
+        pass
+
+    @abstractmethod
+    async def get_online_features_async(
+        self,
+        config: RepoConfig,
+        features: Union[List[str], FeatureService],
+        entity_rows: Union[
+            List[Dict[str, Any]],
+            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
+        ],
+        registry: BaseRegistry,
+        project: str,
+        full_feature_names: bool = False,
+    ) -> OnlineResponse:
         pass
 
     @abstractmethod
@@ -356,6 +450,7 @@ class Provider(ABC):
     ) -> List[
         Tuple[
             Optional[datetime],
+            Optional[EntityKeyProto],
             Optional[ValueProto],
             Optional[ValueProto],
             Optional[ValueProto],
@@ -390,6 +485,27 @@ class Provider(ABC):
             config: Configuration object used to configure a feature store.
             data_source: DataSource object that needs to be validated
         """
+        pass
+
+    @abstractmethod
+    def get_table_column_names_and_types_from_data_source(
+        self, config: RepoConfig, data_source: DataSource
+    ) -> Iterable[Tuple[str, str]]:
+        """
+        Returns the list of column names and raw column types for a DataSource.
+
+        Args:
+            config: Configuration object used to configure a feature store.
+            data_source: DataSource object
+        """
+        pass
+
+    @abstractmethod
+    async def initialize(self, config: RepoConfig) -> None:
+        pass
+
+    @abstractmethod
+    async def close(self) -> None:
         pass
 
 

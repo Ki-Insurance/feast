@@ -11,17 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
+import contextlib
 import itertools
 import logging
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
+from aiobotocore.config import AioConfig
 from pydantic import StrictBool, StrictStr
 
 from feast import Entity, FeatureView, utils
 from feast.infra.infra_object import DYNAMODB_INFRA_OBJECT_CLASS_TYPE, InfraObject
 from feast.infra.online_stores.helpers import compute_entity_id
 from feast.infra.online_stores.online_store import OnlineStore
+from feast.infra.supported_async_methods import SupportedAsyncMethods
+from feast.infra.utils.aws_utils import dynamo_write_items_async
 from feast.protos.feast.core.DynamoDBTable_pb2 import (
     DynamoDBTable as DynamoDBTableProto,
 )
@@ -70,6 +76,12 @@ class DynamoDBOnlineStoreConfig(FeastConfigBaseModel):
     tags: Union[Dict[str, str], None] = None
     """AWS resource tags added to each table"""
 
+    session_based_auth: bool = False
+    """AWS session based client authentication"""
+
+    max_pool_connections: int = 10
+    """Max number of connections for async Dynamodb operations"""
+
 
 class DynamoDBOnlineStore(OnlineStore):
     """
@@ -82,7 +94,18 @@ class DynamoDBOnlineStore(OnlineStore):
 
     _dynamodb_client = None
     _dynamodb_resource = None
-    _aioboto_session = None
+
+    async def initialize(self, config: RepoConfig):
+        await _get_aiodynamodb_client(
+            config.online_store.region, config.online_store.max_pool_connections
+        )
+
+    async def close(self):
+        await _aiodynamodb_close()
+
+    @property
+    def async_supported(self) -> SupportedAsyncMethods:
+        return SupportedAsyncMethods(read=True, write=True)
 
     def update(
         self,
@@ -104,10 +127,14 @@ class DynamoDBOnlineStore(OnlineStore):
         online_config = config.online_store
         assert isinstance(online_config, DynamoDBOnlineStoreConfig)
         dynamodb_client = self._get_dynamodb_client(
-            online_config.region, online_config.endpoint_url
+            online_config.region,
+            online_config.endpoint_url,
+            online_config.session_based_auth,
         )
         dynamodb_resource = self._get_dynamodb_resource(
-            online_config.region, online_config.endpoint_url
+            online_config.region,
+            online_config.endpoint_url,
+            online_config.session_based_auth,
         )
         # Add Tags attribute to creation request only if configured to prevent
         # TagResource permission issues, even with an empty Tags array.
@@ -166,7 +193,9 @@ class DynamoDBOnlineStore(OnlineStore):
         online_config = config.online_store
         assert isinstance(online_config, DynamoDBOnlineStoreConfig)
         dynamodb_resource = self._get_dynamodb_resource(
-            online_config.region, online_config.endpoint_url
+            online_config.region,
+            online_config.endpoint_url,
+            online_config.session_based_auth,
         )
 
         for table in tables:
@@ -201,13 +230,51 @@ class DynamoDBOnlineStore(OnlineStore):
         online_config = config.online_store
         assert isinstance(online_config, DynamoDBOnlineStoreConfig)
         dynamodb_resource = self._get_dynamodb_resource(
-            online_config.region, online_config.endpoint_url
+            online_config.region,
+            online_config.endpoint_url,
+            online_config.session_based_auth,
         )
 
         table_instance = dynamodb_resource.Table(
             _get_table_name(online_config, config, table)
         )
         self._write_batch_non_duplicates(table_instance, data, progress, config)
+
+    async def online_write_batch_async(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        data: List[
+            Tuple[EntityKeyProto, Dict[str, ValueProto], datetime, Optional[datetime]]
+        ],
+        progress: Optional[Callable[[int], Any]],
+    ) -> None:
+        """
+        Writes a batch of feature rows to the online store asynchronously.
+
+        If a tz-naive timestamp is passed to this method, it is assumed to be UTC.
+
+        Args:
+            config: The config for the current feature store.
+            table: Feature view to which these feature rows correspond.
+            data: A list of quadruplets containing feature data. Each quadruplet contains an entity
+                key, a dict containing feature values, an event timestamp for the row, and the created
+                timestamp for the row if it exists.
+            progress: Function to be called once a batch of rows is written to the online store, used
+                to show progress.
+        """
+        online_config = config.online_store
+        assert isinstance(online_config, DynamoDBOnlineStoreConfig)
+
+        table_name = _get_table_name(online_config, config, table)
+        items = [
+            _to_client_write_item(config, entity_key, features, timestamp)
+            for entity_key, features, timestamp, _ in _latest_data_to_write(data)
+        ]
+        client = await _get_aiodynamodb_client(
+            online_config.region, config.online_store.max_pool_connections
+        )
+        await dynamo_write_items_async(client, table_name, items)
 
     def online_read(
         self,
@@ -228,7 +295,9 @@ class DynamoDBOnlineStore(OnlineStore):
         assert isinstance(online_config, DynamoDBOnlineStoreConfig)
 
         dynamodb_resource = self._get_dynamodb_resource(
-            online_config.region, online_config.endpoint_url
+            online_config.region,
+            online_config.endpoint_url,
+            online_config.session_based_auth,
         )
         table_instance = dynamodb_resource.Table(
             _get_table_name(online_config, config, table)
@@ -284,7 +353,6 @@ class DynamoDBOnlineStore(OnlineStore):
         batch_size = online_config.batch_size
         entity_ids = self._to_entity_ids(config, entity_keys)
         entity_ids_iter = iter(entity_ids)
-        result: List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]] = []
         table_name = _get_table_name(online_config, config, table)
 
         deserialize = TypeDeserializer().deserialize
@@ -296,42 +364,64 @@ class DynamoDBOnlineStore(OnlineStore):
                 "values": deserialize(raw_client_response["values"]),
             }
 
-        async with self._get_aiodynamodb_client(online_config.region) as client:
-            while True:
-                batch = list(itertools.islice(entity_ids_iter, batch_size))
+        batches = []
+        entity_id_batches = []
+        while True:
+            batch = list(itertools.islice(entity_ids_iter, batch_size))
+            if not batch:
+                break
+            entity_id_batch = self._to_client_batch_get_payload(
+                online_config, table_name, batch
+            )
+            batches.append(batch)
+            entity_id_batches.append(entity_id_batch)
 
-                # No more items to insert
-                if len(batch) == 0:
-                    break
-                batch_entity_ids = self._to_client_batch_get_payload(
-                    online_config, table_name, batch
+        client = await _get_aiodynamodb_client(
+            online_config.region, online_config.max_pool_connections
+        )
+        response_batches = await asyncio.gather(
+            *[
+                client.batch_get_item(
+                    RequestItems=entity_id_batch,
                 )
-                response = await client.batch_get_item(
-                    RequestItems=batch_entity_ids,
-                )
-                batch_result = self._process_batch_get_response(
-                    table_name, response, entity_ids, batch, to_tbl_response=to_tbl_resp
-                )
-                result.extend(batch_result)
-        return result
+                for entity_id_batch in entity_id_batches
+            ]
+        )
 
-    def _get_aioboto_session(self):
-        if self._aioboto_session is None:
-            self._aioboto_session = session.get_session()
-        return self._aioboto_session
+        result_batches = []
+        for batch, response in zip(batches, response_batches):
+            result_batch = self._process_batch_get_response(
+                table_name,
+                response,
+                entity_ids,
+                batch,
+                to_tbl_response=to_tbl_resp,
+            )
+            result_batches.append(result_batch)
 
-    def _get_aiodynamodb_client(self, region: str):
-        return self._get_aioboto_session().create_client("dynamodb", region_name=region)
+        return list(itertools.chain(*result_batches))
 
-    def _get_dynamodb_client(self, region: str, endpoint_url: Optional[str] = None):
+    def _get_dynamodb_client(
+        self,
+        region: str,
+        endpoint_url: Optional[str] = None,
+        session_based_auth: Optional[bool] = False,
+    ):
         if self._dynamodb_client is None:
-            self._dynamodb_client = _initialize_dynamodb_client(region, endpoint_url)
+            self._dynamodb_client = _initialize_dynamodb_client(
+                region, endpoint_url, session_based_auth
+            )
         return self._dynamodb_client
 
-    def _get_dynamodb_resource(self, region: str, endpoint_url: Optional[str] = None):
+    def _get_dynamodb_resource(
+        self,
+        region: str,
+        endpoint_url: Optional[str] = None,
+        session_based_auth: Optional[bool] = False,
+    ):
         if self._dynamodb_resource is None:
             self._dynamodb_resource = _initialize_dynamodb_resource(
-                region, endpoint_url
+                region, endpoint_url, session_based_auth
             )
         return self._dynamodb_resource
 
@@ -367,19 +457,10 @@ class DynamoDBOnlineStore(OnlineStore):
         """Deduplicate write batch request items on ``entity_id`` primary key."""
         with table_instance.batch_writer(overwrite_by_pkeys=["entity_id"]) as batch:
             for entity_key, features, timestamp, created_ts in data:
-                entity_id = compute_entity_id(
-                    entity_key,
-                    entity_key_serialization_version=config.entity_key_serialization_version,
-                )
                 batch.put_item(
-                    Item={
-                        "entity_id": entity_id,  # PartitionKey
-                        "event_ts": str(utils.make_tzaware(timestamp)),
-                        "values": {
-                            k: v.SerializeToString()
-                            for k, v in features.items()  # Serialized Features
-                        },
-                    }
+                    Item=_to_resource_write_item(
+                        config, entity_key, features, timestamp
+                    )
                 )
                 if progress:
                     progress(1)
@@ -443,17 +524,70 @@ class DynamoDBOnlineStore(OnlineStore):
         }
 
 
-def _initialize_dynamodb_client(region: str, endpoint_url: Optional[str] = None):
-    return boto3.client(
-        "dynamodb",
-        region_name=region,
-        endpoint_url=endpoint_url,
-        config=Config(user_agent=get_user_agent()),
-    )
+_aioboto_session = None
+_aioboto_client = None
 
 
-def _initialize_dynamodb_resource(region: str, endpoint_url: Optional[str] = None):
-    return boto3.resource("dynamodb", region_name=region, endpoint_url=endpoint_url)
+def _get_aioboto_session():
+    global _aioboto_session
+    if _aioboto_session is None:
+        logger.debug("initializing the aiobotocore session")
+        _aioboto_session = session.get_session()
+    return _aioboto_session
+
+
+async def _get_aiodynamodb_client(region: str, max_pool_connections: int):
+    global _aioboto_client
+    if _aioboto_client is None:
+        logger.debug("initializing the aiobotocore dynamodb client")
+        client_context = _get_aioboto_session().create_client(
+            "dynamodb",
+            region_name=region,
+            config=AioConfig(max_pool_connections=max_pool_connections),
+        )
+        context_stack = contextlib.AsyncExitStack()
+        _aioboto_client = await context_stack.enter_async_context(client_context)
+    return _aioboto_client
+
+
+async def _aiodynamodb_close():
+    global _aioboto_client
+    if _aioboto_client:
+        await _aioboto_client.close()
+
+
+def _initialize_dynamodb_client(
+    region: str,
+    endpoint_url: Optional[str] = None,
+    session_based_auth: Optional[bool] = False,
+):
+    if session_based_auth:
+        return boto3.Session().client(
+            "dynamodb",
+            region_name=region,
+            endpoint_url=endpoint_url,
+            config=Config(user_agent=get_user_agent()),
+        )
+    else:
+        return boto3.client(
+            "dynamodb",
+            region_name=region,
+            endpoint_url=endpoint_url,
+            config=Config(user_agent=get_user_agent()),
+        )
+
+
+def _initialize_dynamodb_resource(
+    region: str,
+    endpoint_url: Optional[str] = None,
+    session_based_auth: Optional[bool] = False,
+):
+    if session_based_auth:
+        return boto3.Session().resource(
+            "dynamodb", region_name=region, endpoint_url=endpoint_url
+        )
+    else:
+        return boto3.resource("dynamodb", region_name=region, endpoint_url=endpoint_url)
 
 
 # TODO(achals): This form of user-facing templating is experimental.
@@ -570,3 +704,45 @@ class DynamoDBTable(InfraObject):
                 region, endpoint_url
             )
         return self._dynamodb_resource
+
+
+def _to_resource_write_item(config, entity_key, features, timestamp):
+    entity_id = compute_entity_id(
+        entity_key,
+        entity_key_serialization_version=config.entity_key_serialization_version,
+    )
+    return {
+        "entity_id": entity_id,  # PartitionKey
+        "event_ts": str(utils.make_tzaware(timestamp)),
+        "values": {
+            k: v.SerializeToString()
+            for k, v in features.items()  # Serialized Features
+        },
+    }
+
+
+def _to_client_write_item(config, entity_key, features, timestamp):
+    entity_id = compute_entity_id(
+        entity_key,
+        entity_key_serialization_version=config.entity_key_serialization_version,
+    )
+    return {
+        "entity_id": {"S": entity_id},  # PartitionKey
+        "event_ts": {"S": str(utils.make_tzaware(timestamp))},
+        "values": {
+            "M": {
+                k: {"B": v.SerializeToString()}
+                for k, v in features.items()  # Serialized Features
+            }
+        },
+    }
+
+
+def _latest_data_to_write(
+    data: List[
+        Tuple[EntityKeyProto, Dict[str, ValueProto], datetime, Optional[datetime]]
+    ],
+):
+    as_hashable = ((d[0].SerializeToString(), d) for d in data)
+    sorted_data = sorted(as_hashable, key=lambda ah: (ah[0], ah[1][2]))
+    return (v for _, v in OrderedDict((ah[0], ah[1]) for ah in sorted_data).items())

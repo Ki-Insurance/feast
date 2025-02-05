@@ -36,10 +36,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: "lts/*"
+          node-version-file: './ui/.nvmrc'
       - name: Release (Dry Run)
         id: get_versions
         run: |
+          npx -p @semantic-release/changelog -p @semantic-release/git -p @semantic-release/exec -p semantic-release semantic-release --dry-run
           CURRENT_VERSION=$(npx -p @semantic-release/changelog -p @semantic-release/git -p @semantic-release/exec -p semantic-release semantic-release --dry-run | grep "associated with version " | sed -E 's/.* version//' | sed -E 's/ on.*//')
           NEXT_VERSION=$(npx -p @semantic-release/changelog -p @semantic-release/git -p @semantic-release/exec -p semantic-release semantic-release --dry-run | grep 'The next release version is' | sed -E 's/.* ([[:digit:].]+)$/\1/')
           echo ::set-output name=current_version::$CURRENT_VERSION
@@ -62,7 +63,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: "lts/*"
+          node-version-file: './ui/.nvmrc'
       - name: Bump file versions
         run: python ./infra/scripts/release/bump_file_versions.py ${CURRENT_VERSION} ${NEXT_VERSION}
       - name: Install yarn dependencies
@@ -103,7 +104,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: "lts/*"
+          node-version-file: './ui/.nvmrc'
       - name: Bump file versions (temporarily for Web UI publish)
         run: python ./infra/scripts/release/bump_file_versions.py ${CURRENT_VERSION} ${NEXT_VERSION}
       - name: Install yarn dependencies
@@ -138,7 +139,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: "lts/*"
+        node-version-file: './ui/.nvmrc'
     - name: Set up Homebrew
       id: set-up-homebrew
       uses: Homebrew/actions/setup-homebrew@master

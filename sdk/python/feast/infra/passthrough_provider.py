@@ -1,17 +1,30 @@
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import pandas as pd
 import pyarrow as pa
 from tqdm import tqdm
 
-from feast import importer
+from feast import OnDemandFeatureView, importer
+from feast.base_feature_view import BaseFeatureView
 from feast.batch_feature_view import BatchFeatureView
 from feast.data_source import DataSource
 from feast.entity import Entity
 from feast.feature_logging import FeatureServiceLoggingSource
 from feast.feature_service import FeatureService
 from feast.feature_view import FeatureView
+from feast.infra.infra_object import Infra, InfraObject
 from feast.infra.materialization.batch_materialization_engine import (
     BatchMaterializationEngine,
     MaterializationJobStatus,
@@ -22,7 +35,11 @@ from feast.infra.offline_stores.offline_utils import get_offline_store_from_conf
 from feast.infra.online_stores.helpers import get_online_store_from_config
 from feast.infra.provider import Provider
 from feast.infra.registry.base_registry import BaseRegistry
+from feast.infra.supported_async_methods import ProviderAsyncMethods
+from feast.online_response import OnlineResponse
+from feast.protos.feast.core.Registry_pb2 import Registry as RegistryProto
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
+from feast.protos.feast.types.Value_pb2 import RepeatedValue
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import BATCH_ENGINE_CLASS_FOR_TYPE, RepoConfig
 from feast.saved_dataset import SavedDataset
@@ -64,6 +81,12 @@ class PassthroughProvider(Provider):
         return self._offline_store
 
     @property
+    def async_supported(self) -> ProviderAsyncMethods:
+        return ProviderAsyncMethods(
+            online=self.online_store.async_supported,
+        )
+
+    @property
     def batch_engine(self) -> BatchMaterializationEngine:
         if self._batch_engine:
             return self._batch_engine
@@ -103,11 +126,22 @@ class PassthroughProvider(Provider):
             self._batch_engine = _batch_engine
             return _batch_engine
 
+    def plan_infra(
+        self, config: RepoConfig, desired_registry_proto: RegistryProto
+    ) -> Infra:
+        infra = Infra()
+        if self.online_store:
+            infra_objects: List[InfraObject] = self.online_store.plan(
+                config, desired_registry_proto
+            )
+            infra.infra_objects += infra_objects
+        return infra
+
     def update_infra(
         self,
         project: str,
         tables_to_delete: Sequence[FeatureView],
-        tables_to_keep: Sequence[FeatureView],
+        tables_to_keep: Sequence[Union[FeatureView, OnDemandFeatureView]],
         entities_to_delete: Sequence[Entity],
         entities_to_keep: Sequence[Entity],
         partial: bool,
@@ -145,7 +179,7 @@ class PassthroughProvider(Provider):
     def online_write_batch(
         self,
         config: RepoConfig,
-        table: FeatureView,
+        table: Union[FeatureView, BaseFeatureView, OnDemandFeatureView],
         data: List[
             Tuple[EntityKeyProto, Dict[str, ValueProto], datetime, Optional[datetime]]
         ],
@@ -153,6 +187,20 @@ class PassthroughProvider(Provider):
     ) -> None:
         if self.online_store:
             self.online_store.online_write_batch(config, table, data, progress)
+
+    async def online_write_batch_async(
+        self,
+        config: RepoConfig,
+        table: Union[FeatureView, BaseFeatureView, OnDemandFeatureView],
+        data: List[
+            Tuple[EntityKeyProto, Dict[str, ValueProto], datetime, Optional[datetime]]
+        ],
+        progress: Optional[Callable[[int], Any]],
+    ) -> None:
+        if self.online_store:
+            await self.online_store.online_write_batch_async(
+                config, table, data, progress
+            )
 
     def offline_write_batch(
         self,
@@ -180,19 +228,47 @@ class PassthroughProvider(Provider):
             )
         return result
 
-    async def online_read_async_v2(
+    def get_online_features(
         self,
         config: RepoConfig,
-        table: FeatureView,
-        entity_keys: List[EntityKeyProto],
-        requested_features: List[str] = None,
-    ) -> List:
-        result = []
-        if self.online_store:
-            result = await self.online_store.online_read_async_v2(
-                config, table, entity_keys, requested_features
-            )
-        return result
+        features: Union[List[str], FeatureService],
+        entity_rows: Union[
+            List[Dict[str, Any]],
+            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
+        ],
+        registry: BaseRegistry,
+        project: str,
+        full_feature_names: bool = False,
+    ) -> OnlineResponse:
+        return self.online_store.get_online_features(
+            config=config,
+            features=features,
+            entity_rows=entity_rows,
+            registry=registry,
+            project=project,
+            full_feature_names=full_feature_names,
+        )
+
+    async def get_online_features_async(
+        self,
+        config: RepoConfig,
+        features: Union[List[str], FeatureService],
+        entity_rows: Union[
+            List[Dict[str, Any]],
+            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
+        ],
+        registry: BaseRegistry,
+        project: str,
+        full_feature_names: bool = False,
+    ) -> OnlineResponse:
+        return await self.online_store.get_online_features_async(
+            config=config,
+            features=features,
+            entity_rows=entity_rows,
+            registry=registry,
+            project=project,
+            full_feature_names=full_feature_names,
+        )
 
     async def online_read_async(
         self,
@@ -229,25 +305,76 @@ class PassthroughProvider(Provider):
             )
         return result
 
-    def ingest_df(
-        self,
-        feature_view: FeatureView,
+    @staticmethod
+    def _prep_rows_to_write_for_ingestion(
+        feature_view: Union[BaseFeatureView, FeatureView, OnDemandFeatureView],
         df: pd.DataFrame,
+        field_mapping: Optional[Dict] = None,
     ):
         table = pa.Table.from_pandas(df)
+        if isinstance(feature_view, OnDemandFeatureView):
+            if not field_mapping:
+                field_mapping = {}
+            table = _run_pyarrow_field_mapping(table, field_mapping)
+            join_keys = {
+                entity.name: entity.dtype.to_value_type()
+                for entity in feature_view.entity_columns
+            }
+            rows_to_write = _convert_arrow_to_proto(table, feature_view, join_keys)
+        else:
+            if hasattr(feature_view, "entity_columns"):
+                join_keys = {
+                    entity.name: entity.dtype.to_value_type()
+                    for entity in feature_view.entity_columns
+                }
+            else:
+                join_keys = {}
 
-        if feature_view.batch_source.field_mapping is not None:
-            table = _run_pyarrow_field_mapping(
-                table, feature_view.batch_source.field_mapping
-            )
+            # Note: A dictionary mapping of column names in this data
+            #   source to feature names in a feature table or view. Only used for feature
+            #   columns, not entity or timestamp columns.
+            if hasattr(feature_view, "batch_source"):
+                if feature_view.batch_source.field_mapping is not None:
+                    table = _run_pyarrow_field_mapping(
+                        table, feature_view.batch_source.field_mapping
+                    )
+            else:
+                table = _run_pyarrow_field_mapping(table, {})
 
-        join_keys = {
-            entity.name: entity.dtype.to_value_type()
-            for entity in feature_view.entity_columns
-        }
-        rows_to_write = _convert_arrow_to_proto(table, feature_view, join_keys)
+            if not isinstance(feature_view, BaseFeatureView):
+                for entity in feature_view.entity_columns:
+                    join_keys[entity.name] = entity.dtype.to_value_type()
+            rows_to_write = _convert_arrow_to_proto(table, feature_view, join_keys)
 
+        return rows_to_write
+
+    def ingest_df(
+        self,
+        feature_view: Union[BaseFeatureView, FeatureView, OnDemandFeatureView],
+        df: pd.DataFrame,
+        field_mapping: Optional[Dict] = None,
+    ):
+        rows_to_write = self._prep_rows_to_write_for_ingestion(
+            feature_view=feature_view,
+            df=df,
+            field_mapping=field_mapping,
+        )
         self.online_write_batch(
+            self.repo_config, feature_view, rows_to_write, progress=None
+        )
+
+    async def ingest_df_async(
+        self,
+        feature_view: Union[BaseFeatureView, FeatureView, OnDemandFeatureView],
+        df: pd.DataFrame,
+        field_mapping: Optional[Dict] = None,
+    ):
+        rows_to_write = self._prep_rows_to_write_for_ingestion(
+            feature_view=feature_view,
+            df=df,
+            field_mapping=field_mapping,
+        )
+        await self.online_write_batch_async(
             self.repo_config, feature_view, rows_to_write, progress=None
         )
 
@@ -386,3 +513,16 @@ class PassthroughProvider(Provider):
         data_source: DataSource,
     ):
         self.offline_store.validate_data_source(config=config, data_source=data_source)
+
+    def get_table_column_names_and_types_from_data_source(
+        self, config: RepoConfig, data_source: DataSource
+    ) -> Iterable[Tuple[str, str]]:
+        return self.offline_store.get_table_column_names_and_types_from_data_source(
+            config=config, data_source=data_source
+        )
+
+    async def initialize(self, config: RepoConfig) -> None:
+        await self.online_store.initialize(config)
+
+    async def close(self) -> None:
+        await self.online_store.close()

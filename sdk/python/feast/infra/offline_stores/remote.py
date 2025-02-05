@@ -3,16 +3,19 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.flight as fl
 import pyarrow.parquet
+from pyarrow import Schema
+from pyarrow._flight import FlightCallOptions, FlightDescriptor, Ticket
 from pydantic import StrictInt, StrictStr
 
 from feast import OnDemandFeatureView
+from feast.arrow_error_handler import arrow_client_error_handling_decorator
 from feast.data_source import DataSource
 from feast.feature_logging import (
     FeatureServiceLoggingSource,
@@ -27,10 +30,52 @@ from feast.infra.offline_stores.offline_store import (
     RetrievalMetadata,
 )
 from feast.infra.registry.base_registry import BaseRegistry
+from feast.permissions.auth.auth_type import AuthType
+from feast.permissions.auth_model import AuthConfig
+from feast.permissions.client.arrow_flight_auth_interceptor import (
+    FlightAuthInterceptorFactory,
+)
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.saved_dataset import SavedDatasetStorage
 
 logger = logging.getLogger(__name__)
+
+
+class FeastFlightClient(fl.FlightClient):
+    @arrow_client_error_handling_decorator
+    def get_flight_info(
+        self, descriptor: FlightDescriptor, options: FlightCallOptions = None
+    ):
+        return super().get_flight_info(descriptor, options)
+
+    @arrow_client_error_handling_decorator
+    def do_get(self, ticket: Ticket, options: FlightCallOptions = None):
+        return super().do_get(ticket, options)
+
+    @arrow_client_error_handling_decorator
+    def do_put(
+        self,
+        descriptor: FlightDescriptor,
+        schema: Schema,
+        options: FlightCallOptions = None,
+    ):
+        return super().do_put(descriptor, schema, options)
+
+    @arrow_client_error_handling_decorator
+    def list_flights(self, criteria: bytes = b"", options: FlightCallOptions = None):
+        return super().list_flights(criteria, options)
+
+    @arrow_client_error_handling_decorator
+    def list_actions(self, options: FlightCallOptions = None):
+        return super().list_actions(options)
+
+
+def build_arrow_flight_client(host: str, port, auth_config: AuthConfig):
+    if auth_config.type != AuthType.NONE.value:
+        middlewares = [FlightAuthInterceptorFactory(auth_config)]
+        return FeastFlightClient(f"grpc://{host}:{port}", middleware=middlewares)
+
+    return FeastFlightClient(f"grpc://{host}:{port}")
 
 
 class RemoteOfflineStoreConfig(FeastConfigBaseModel):
@@ -45,7 +90,7 @@ class RemoteOfflineStoreConfig(FeastConfigBaseModel):
 class RemoteRetrievalJob(RetrievalJob):
     def __init__(
         self,
-        client: fl.FlightClient,
+        client: FeastFlightClient,
         api: str,
         api_parameters: Dict[str, Any],
         entity_df: Union[pd.DataFrame, str] = None,
@@ -69,7 +114,11 @@ class RemoteRetrievalJob(RetrievalJob):
     # This is where do_get service is invoked
     def _to_arrow_internal(self, timeout: Optional[int] = None) -> pa.Table:
         return _send_retrieve_remote(
-            self.api, self.api_parameters, self.entity_df, self.table, self.client
+            self.api,
+            self.api_parameters,
+            self.entity_df,
+            self.table,
+            self.client,
         )
 
     @property
@@ -128,8 +177,9 @@ class RemoteOfflineStore(OfflineStore):
     ) -> RemoteRetrievalJob:
         assert isinstance(config.offline_store, RemoteOfflineStoreConfig)
 
-        # Initialize the client connection
-        client = RemoteOfflineStore.init_client(config)
+        client = build_arrow_flight_client(
+            config.offline_store.host, config.offline_store.port, config.auth_config
+        )
 
         feature_view_names = [fv.name for fv in feature_views]
         name_aliases = [fv.projection.name_alias for fv in feature_views]
@@ -163,7 +213,9 @@ class RemoteOfflineStore(OfflineStore):
         assert isinstance(config.offline_store, RemoteOfflineStoreConfig)
 
         # Initialize the client connection
-        client = RemoteOfflineStore.init_client(config)
+        client = build_arrow_flight_client(
+            config.offline_store.host, config.offline_store.port, config.auth_config
+        )
 
         api_parameters = {
             "data_source_name": data_source.name,
@@ -194,7 +246,9 @@ class RemoteOfflineStore(OfflineStore):
         assert isinstance(config.offline_store, RemoteOfflineStoreConfig)
 
         # Initialize the client connection
-        client = RemoteOfflineStore.init_client(config)
+        client = build_arrow_flight_client(
+            config.offline_store.host, config.offline_store.port, config.auth_config
+        )
 
         api_parameters = {
             "data_source_name": data_source.name,
@@ -227,7 +281,9 @@ class RemoteOfflineStore(OfflineStore):
             data = pyarrow.parquet.read_table(data, use_threads=False, pre_buffer=False)
 
         # Initialize the client connection
-        client = RemoteOfflineStore.init_client(config)
+        client = build_arrow_flight_client(
+            config.offline_store.host, config.offline_store.port, config.auth_config
+        )
 
         api_parameters = {
             "feature_service_name": source._feature_service.name,
@@ -251,7 +307,9 @@ class RemoteOfflineStore(OfflineStore):
         assert isinstance(config.offline_store, RemoteOfflineStoreConfig)
 
         # Initialize the client connection
-        client = RemoteOfflineStore.init_client(config)
+        client = build_arrow_flight_client(
+            config.offline_store.host, config.offline_store.port, config.auth_config
+        )
 
         feature_view_names = [feature_view.name]
         name_aliases = [feature_view.projection.name_alias]
@@ -270,12 +328,56 @@ class RemoteOfflineStore(OfflineStore):
             entity_df=None,
         )
 
-    @staticmethod
-    def init_client(config):
-        location = f"grpc://{config.offline_store.host}:{config.offline_store.port}"
-        client = fl.connect(location=location)
-        logger.info(f"Connecting FlightClient at {location}")
-        return client
+    def validate_data_source(
+        self,
+        config: RepoConfig,
+        data_source: DataSource,
+    ):
+        assert isinstance(config.offline_store, RemoteOfflineStoreConfig)
+
+        client = build_arrow_flight_client(
+            config.offline_store.host, config.offline_store.port, config.auth_config
+        )
+
+        api_parameters = {
+            "data_source_proto": str(data_source),
+        }
+        logger.debug(f"validating DataSource {data_source.name}")
+        _call_put(
+            api=OfflineStore.validate_data_source.__name__,
+            api_parameters=api_parameters,
+            client=client,
+            table=None,
+            entity_df=None,
+        )
+
+    def get_table_column_names_and_types_from_data_source(
+        self, config: RepoConfig, data_source: DataSource
+    ) -> Iterable[Tuple[str, str]]:
+        assert isinstance(config.offline_store, RemoteOfflineStoreConfig)
+
+        client = build_arrow_flight_client(
+            config.offline_store.host, config.offline_store.port, config.auth_config
+        )
+
+        api_parameters = {
+            "data_source_proto": str(data_source),
+        }
+        logger.debug(
+            f"Calling {OfflineStore.get_table_column_names_and_types_from_data_source.__name__} with {api_parameters}"
+        )
+        table = _send_retrieve_remote(
+            api=OfflineStore.get_table_column_names_and_types_from_data_source.__name__,
+            api_parameters=api_parameters,
+            client=client,
+            table=None,
+            entity_df=None,
+        )
+
+        logger.debug(
+            f"get_table_column_names_and_types_from_data_source for {data_source.name}: {table}"
+        )
+        return zip(table.column("name").to_pylist(), table.column("type").to_pylist())
 
 
 def _create_retrieval_metadata(feature_refs: List[str], entity_df: pd.DataFrame):
@@ -329,23 +431,32 @@ def _send_retrieve_remote(
     api_parameters: Dict[str, Any],
     entity_df: Union[pd.DataFrame, str],
     table: pa.Table,
-    client: fl.FlightClient,
+    client: FeastFlightClient,
 ):
-    command_descriptor = _call_put(api, api_parameters, client, entity_df, table)
+    command_descriptor = _call_put(
+        api,
+        api_parameters,
+        client,
+        entity_df,
+        table,
+    )
     return _call_get(client, command_descriptor)
 
 
-def _call_get(client: fl.FlightClient, command_descriptor: fl.FlightDescriptor):
+def _call_get(
+    client: FeastFlightClient,
+    command_descriptor: fl.FlightDescriptor,
+):
     flight = client.get_flight_info(command_descriptor)
     ticket = flight.endpoints[0].ticket
     reader = client.do_get(ticket)
-    return reader.read_all()
+    return read_all(reader)
 
 
 def _call_put(
     api: str,
     api_parameters: Dict[str, Any],
-    client: fl.FlightClient,
+    client: FeastFlightClient,
     entity_df: Union[pd.DataFrame, str],
     table: pa.Table,
 ):
@@ -373,7 +484,7 @@ def _put_parameters(
     command_descriptor: fl.FlightDescriptor,
     entity_df: Union[pd.DataFrame, str],
     table: pa.Table,
-    client: fl.FlightClient,
+    client: FeastFlightClient,
 ):
     updatedTable: pa.Table
 
@@ -384,13 +495,20 @@ def _put_parameters(
     else:
         updatedTable = _create_empty_table()
 
-    writer, _ = client.do_put(
-        command_descriptor,
-        updatedTable.schema,
-    )
+    writer, _ = client.do_put(command_descriptor, updatedTable.schema)
 
-    writer.write_table(updatedTable)
+    write_table(writer, updatedTable)
+
+
+@arrow_client_error_handling_decorator
+def write_table(writer, updated_table: pa.Table):
+    writer.write_table(updated_table)
     writer.close()
+
+
+@arrow_client_error_handling_decorator
+def read_all(reader):
+    return reader.read_all()
 
 
 def _create_empty_table():

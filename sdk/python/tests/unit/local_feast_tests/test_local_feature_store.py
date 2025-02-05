@@ -9,14 +9,18 @@ from feast.aggregation import Aggregation
 from feast.data_format import AvroFormat, ParquetFormat
 from feast.data_source import KafkaSource
 from feast.entity import Entity
+from feast.feast_object import ALL_RESOURCE_TYPES
 from feast.feature_store import FeatureStore
-from feast.feature_view import FeatureView
+from feast.feature_view import DUMMY_ENTITY_ID, DUMMY_ENTITY_NAME, FeatureView
 from feast.field import Field
 from feast.infra.offline_stores.file_source import FileSource
 from feast.infra.online_stores.sqlite import SqliteOnlineStoreConfig
+from feast.permissions.action import AuthzedAction
+from feast.permissions.permission import Permission
+from feast.permissions.policy import RoleBasedPolicy
 from feast.repo_config import RepoConfig
 from feast.stream_feature_view import stream_feature_view
-from feast.types import Array, Bytes, Float32, Int64, String
+from feast.types import Array, Bytes, Float32, Int64, String, ValueType, from_value_type
 from tests.integration.feature_repos.universal.feature_views import TAGS
 from tests.utils.cli_repo_creator import CliRunner, get_example_repo
 from tests.utils.data_source_test_creator import prep_file_source
@@ -134,7 +138,7 @@ def test_apply_feature_view(test_feature_store):
     tags_filter = utils.tags_str_to_dict("('team:matchmaking',)")
     assert tags_filter == tags_dict
     tags_filter = utils.tags_list_to_dict(("team:matchmaking", "test"))
-    assert tags_dict == tags_dict
+    assert tags_filter == tags_dict
 
     # List Feature Views
     feature_views = test_feature_store.list_batch_feature_views(tags=tags_filter)
@@ -205,8 +209,9 @@ def test_apply_feature_view_with_inline_batch_source(
         test_feature_store.apply([entity, driver_fv])
 
         fvs = test_feature_store.list_batch_feature_views()
+        dfv = fvs[0]
         assert len(fvs) == 1
-        assert fvs[0] == driver_fv
+        assert dfv == driver_fv
 
         ds = test_feature_store.list_data_sources()
         assert len(ds) == 1
@@ -342,6 +347,99 @@ def test_apply_entities_and_feature_views(test_feature_store):
     "test_feature_store",
     [lazy_fixture("feature_store_with_local_registry")],
 )
+def test_apply_dummy_entity_and_feature_view_columns(test_feature_store):
+    assert isinstance(test_feature_store, FeatureStore)
+    # Create Feature Views
+    batch_source = FileSource(
+        file_format=ParquetFormat(),
+        path="file://feast/*",
+        timestamp_field="ts_col",
+        created_timestamp_column="timestamp",
+    )
+
+    e1 = Entity(
+        name="fs1_my_entity_1", description="something", value_type=ValueType.INT64
+    )
+
+    fv_no_entity = FeatureView(
+        name="my_feature_view_no_entity",
+        schema=[
+            Field(name="fs1_my_feature_1", dtype=Int64),
+            Field(name="fs1_my_entity_1", dtype=Int64),
+        ],
+        entities=[],
+        tags={"team": "matchmaking"},
+        source=batch_source,
+        ttl=timedelta(minutes=5),
+    )
+    fv_with_entity = FeatureView(
+        name="my_feature_view_with_entity",
+        schema=[
+            Field(name="fs1_my_feature_1", dtype=Int64),
+            Field(name="fs1_my_entity_1", dtype=Int64),
+        ],
+        entities=[e1],
+        tags={"team": "matchmaking"},
+        source=batch_source,
+        ttl=timedelta(minutes=5),
+    )
+
+    # Check that the entity_columns are empty before applying
+    assert fv_no_entity.entities == [DUMMY_ENTITY_NAME]
+    assert fv_no_entity.entity_columns == []
+    # Note that this test is a special case rooted in the entity being included in the schema
+    assert fv_with_entity.entity_columns == [
+        Field(name=e1.join_key, dtype=from_value_type(e1.value_type))
+    ]
+    # Register Feature View
+    test_feature_store.apply([e1, fv_no_entity, fv_with_entity])
+    fv_from_online_store = test_feature_store.get_feature_view(
+        "my_feature_view_no_entity"
+    )
+    # Note that after the apply() the feature_view serializes the Dummy Entity ID
+    assert fv_no_entity.entity_columns[0].name == DUMMY_ENTITY_ID
+    assert fv_from_online_store.entity_columns[0].name == DUMMY_ENTITY_ID
+    assert fv_from_online_store.entities == []
+    assert fv_no_entity.entities == [DUMMY_ENTITY_NAME]
+    assert fv_with_entity.entity_columns[0].name == e1.join_key
+
+    test_feature_store.teardown()
+
+
+@pytest.mark.parametrize(
+    "test_feature_store",
+    [lazy_fixture("feature_store_with_local_registry")],
+)
+def test_apply_permissions(test_feature_store):
+    assert isinstance(test_feature_store, FeatureStore)
+
+    permission = Permission(
+        name="reader",
+        types=ALL_RESOURCE_TYPES,
+        policy=RoleBasedPolicy(roles=["reader"]),
+        actions=[AuthzedAction.DESCRIBE],
+    )
+
+    # Register Permission
+    test_feature_store.apply([permission])
+
+    permissions = test_feature_store.list_permissions()
+    assert len(permissions) == 1
+    assert permissions[0] == permission
+
+    # delete Permission
+    test_feature_store.apply(objects=[], objects_to_delete=[permission], partial=False)
+
+    permissions = test_feature_store.list_permissions()
+    assert len(permissions) == 0
+
+    test_feature_store.teardown()
+
+
+@pytest.mark.parametrize(
+    "test_feature_store",
+    [lazy_fixture("feature_store_with_local_registry")],
+)
 @pytest.mark.parametrize("dataframe_source", [lazy_fixture("simple_dataset_1")])
 def test_reapply_feature_view(test_feature_store, dataframe_source):
     with prep_file_source(df=dataframe_source, timestamp_field="ts_1") as file_source:
@@ -389,6 +487,20 @@ def test_reapply_feature_view(test_feature_store, dataframe_source):
 
         # Check Feature View
         fv_stored = test_feature_store.get_feature_view(fv1.name)
+        assert len(fv_stored.materialization_intervals) == 1
+
+        # Change and apply Feature View, this time, only the name
+        fv2 = FeatureView(
+            name="my_feature_view_2",
+            schema=[Field(name="int64_col", dtype=Int64)],
+            entities=[e],
+            source=file_source,
+            ttl=timedelta(minutes=5),
+        )
+        test_feature_store.apply([fv2])
+
+        # Check Feature View
+        fv_stored = test_feature_store.get_feature_view(fv2.name)
         assert len(fv_stored.materialization_intervals) == 0
 
         test_feature_store.teardown()

@@ -2,7 +2,7 @@ import os
 import tempfile
 import uuid
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -14,7 +14,6 @@ import pyspark
 from pydantic import StrictStr
 from pyspark import SparkConf
 from pyspark.sql import SparkSession
-from pytz import utc
 
 from feast import FeatureView, OnDemandFeatureView
 from feast.data_source import DataSource
@@ -31,7 +30,6 @@ from feast.infra.offline_stores.offline_store import (
     RetrievalMetadata,
 )
 from feast.infra.registry.base_registry import BaseRegistry
-from feast.infra.utils import aws_utils
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.saved_dataset import SavedDatasetStorage
 from feast.type_map import spark_schema_to_np_dtypes
@@ -284,8 +282,8 @@ class SparkOfflineStore(OfflineStore):
 
         fields = ", ".join(join_key_columns + feature_name_columns + [timestamp_field])
         from_expression = data_source.get_table_query_string()
-        start_date = start_date.astimezone(tz=utc)
-        end_date = end_date.astimezone(tz=utc)
+        start_date = start_date.astimezone(tz=timezone.utc)
+        end_date = end_date.astimezone(tz=timezone.utc)
 
         query = f"""
             SELECT {fields}
@@ -400,6 +398,8 @@ class SparkRetrievalJob(RetrievalJob):
 
                 return _list_files_in_folder(output_uri)
             elif self._config.offline_store.staging_location.startswith("s3://"):
+                from feast.infra.utils import aws_utils
+
                 spark_compatible_s3_staging_location = (
                     self._config.offline_store.staging_location.replace(
                         "s3://", "s3a://"
@@ -520,13 +520,10 @@ def _upload_entity_df(
             entity_df[event_timestamp_col], utc=True
         )
         spark_session.createDataFrame(entity_df).createOrReplaceTempView(table_name)
-        return
     elif isinstance(entity_df, str):
         spark_session.sql(entity_df).createOrReplaceTempView(table_name)
-        return
     elif isinstance(entity_df, pyspark.sql.DataFrame):
         entity_df.createOrReplaceTempView(table_name)
-        return
     else:
         raise InvalidEntityType(type(entity_df))
 
@@ -534,7 +531,7 @@ def _upload_entity_df(
 def _format_datetime(t: datetime) -> str:
     # Since Hive does not support timezone, need to transform to utc.
     if t.tzinfo:
-        t = t.astimezone(tz=utc)
+        t = t.astimezone(tz=timezone.utc)
     dt = t.strftime("%Y-%m-%d %H:%M:%S.%f")
     return dt
 

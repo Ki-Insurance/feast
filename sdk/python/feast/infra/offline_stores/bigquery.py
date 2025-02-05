@@ -45,7 +45,7 @@ from feast.infra.registry.base_registry import BaseRegistry
 from feast.on_demand_feature_view import OnDemandFeatureView
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.saved_dataset import SavedDatasetStorage
-from feast.utils import get_user_agent
+from feast.utils import _utc_now, get_user_agent
 
 from .bigquery_source import (
     BigQueryLoggingDestination,
@@ -59,13 +59,22 @@ try:
     from google.auth.exceptions import DefaultCredentialsError
     from google.cloud import bigquery
     from google.cloud.bigquery import Client, SchemaField, Table
-    from google.cloud.bigquery._pandas_helpers import ARROW_SCALAR_IDS_TO_BQ
     from google.cloud.storage import Client as StorageClient
 
 except ImportError as e:
     from feast.errors import FeastExtrasDependencyImportError
 
     raise FeastExtrasDependencyImportError("gcp", str(e))
+
+try:
+    from google.cloud.bigquery._pyarrow_helpers import _ARROW_SCALAR_IDS_TO_BQ
+except ImportError:
+    try:
+        from google.cloud.bigquery._pandas_helpers import (  # type: ignore
+            ARROW_SCALAR_IDS_TO_BQ as _ARROW_SCALAR_IDS_TO_BQ,
+        )
+    except ImportError as e:
+        raise FeastExtrasDependencyImportError("gcp", str(e))
 
 
 def get_http_client_info():
@@ -105,7 +114,7 @@ class BigQueryOfflineStoreConfig(FeastConfigBaseModel):
 
     @field_validator("billing_project_id")
     def project_id_exists(cls, v, values, **kwargs):
-        if v and not values["project_id"]:
+        if v and not values.data["project_id"]:
             raise ValueError(
                 "please specify project_id if billing_project_id is specified"
             )
@@ -233,6 +242,7 @@ class BigQueryOfflineStore(OfflineStore):
             dataset_project,
             config.offline_store.dataset,
             config.offline_store.location,
+            config.offline_store.table_create_disposition,
         )
 
         entity_schema = _get_entity_schema(
@@ -669,6 +679,7 @@ def _get_table_reference_for_new_entity(
     dataset_project: str,
     dataset_name: str,
     dataset_location: Optional[str],
+    table_create_disposition: str,
 ) -> str:
     """Gets the table_id for the new entity to be uploaded."""
 
@@ -678,8 +689,13 @@ def _get_table_reference_for_new_entity(
 
     try:
         client.get_dataset(dataset.reference)
-    except NotFound:
+    except NotFound as nfe:
         # Only create the dataset if it does not exist
+        if table_create_disposition == "CREATE_NEVER":
+            raise ValueError(
+                f"Dataset {dataset_project}.{dataset_name} does not exist "
+                f"and table_create_disposition is set to {table_create_disposition}."
+            ) from nfe
         client.create_dataset(dataset, exists_ok=True)
 
     table_name = offline_utils.get_temp_entity_table_name()
@@ -709,7 +725,7 @@ def _upload_entity_df(
 
     # Ensure that the table expires after some time
     table = client.get_table(table=table_name)
-    table.expires = datetime.utcnow() + timedelta(minutes=30)
+    table.expires = _utc_now() + timedelta(minutes=30)
     client.update_table(table, ["expires"])
 
     return table
@@ -802,10 +818,10 @@ def arrow_schema_to_bq_schema(arrow_schema: pyarrow.Schema) -> List[SchemaField]
     for field in arrow_schema:
         if pyarrow.types.is_list(field.type):
             detected_mode = "REPEATED"
-            detected_type = ARROW_SCALAR_IDS_TO_BQ[field.type.value_type.id]
+            detected_type = _ARROW_SCALAR_IDS_TO_BQ[field.type.value_type.id]
         else:
             detected_mode = "NULLABLE"
-            detected_type = ARROW_SCALAR_IDS_TO_BQ[field.type.id]
+            detected_type = _ARROW_SCALAR_IDS_TO_BQ[field.type.id]
 
         bq_schema.append(
             SchemaField(name=field.name, field_type=detected_type, mode=detected_mode)

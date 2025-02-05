@@ -16,7 +16,7 @@ from feast.feature_logging import (
     LoggingConfig,
 )
 from feast.protos.feast.serving.ServingService_pb2 import FieldStatus
-from feast.utils import make_tzaware
+from feast.utils import _utc_now, make_tzaware
 from feast.wait import wait_retry_backoff
 from tests.integration.feature_repos.repo_configuration import (
     construct_universal_feature_views,
@@ -305,6 +305,23 @@ def test_e2e_validation_via_cli(environment, universal_data_sources):
         assert p.returncode == 0, p.stderr.decode()
         assert "Validation successful" in p.stdout.decode(), p.stderr.decode()
 
+        p = runner.run(
+            ["saved-datasets", "describe", saved_dataset.name], cwd=local_repo.repo_path
+        )
+        assert p.returncode == 0, p.stderr.decode()
+
+        p = runner.run(
+            ["validation-references", "describe", reference.name],
+            cwd=local_repo.repo_path,
+        )
+        assert p.returncode == 0, p.stderr.decode()
+
+        p = runner.run(
+            ["feature-services", "describe", feature_service.name],
+            cwd=local_repo.repo_path,
+        )
+        assert p.returncode == 0, p.stderr.decode()
+
         # make sure second validation will use cached profile
         shutil.rmtree(saved_dataset.storage.file_options.uri)
 
@@ -316,8 +333,7 @@ def test_e2e_validation_via_cli(environment, universal_data_sources):
                 "avg_passenger_count": [0],
                 "lifetime_trip_count": [0],
                 "event_timestamp": [
-                    make_tzaware(datetime.datetime.utcnow())
-                    - datetime.timedelta(hours=1)
+                    make_tzaware(_utc_now()) - datetime.timedelta(hours=1)
                 ],
             }
         )

@@ -1,60 +1,49 @@
 {
   "name": "@feast-dev/feast-ui",
-  "version": "0.39.0",
+  "version": "0.41.3",
   "private": false,
   "files": [
     "dist"
   ],
   "main": "./dist/feast-ui.cjs",
+  "types": "./dist/FeastUI.d.ts",
   "module": "./dist/feast-ui.module.js",
   "peerDependencies": {
-    "@elastic/datemath": "^5.0.3",
-    "@elastic/eui": "^55.0.1",
-    "@emotion/react": "^11.7.1",
-    "@types/d3": "^7.1.0",
-    "@types/react": "^17.0.20",
-    "@types/react-dom": "^17.0.9",
-    "d3": "^7.3.0",
-    "inter-ui": "^3.19.3",
-    "moment": "^2.29.1",
-    "prop-types": "^15.8.1",
-    "query-string": "^7.1.1",
-    "react": "^17.0.2",
-    "react-dom": "^17.0.2",
-    "react-query": "^3.34.12",
-    "react-router-dom": "6",
-    "react-scripts": "^5.0.0",
-    "typescript": "^4.4.2",
-    "use-query-params": "^1.2.3",
-    "zod": "^3.11.6"
+    "@elastic/eui": "^95.12.0",
+    "@emotion/react": "^11.13.3",
+    "react": "^17.0.2 || ^18.0.0",
+    "react-dom": "^17.0.2 || ^18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@elastic/eui": {
+      "optional": true
+    },
+    "@emotion/react": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@elastic/datemath": "^5.0.3",
-    "@elastic/eui": "^55.0.1",
-    "@emotion/react": "^11.7.1",
-    "@types/d3": "^7.1.0",
-    "@types/jest": "^27.0.1",
-    "@types/node": "^16.7.13",
-    "@types/react": "^17.0.20",
-    "@types/react-dom": "^17.0.9",
-    "d3": "^7.3.0",
+    "@elastic/eui": "^95.12.0",
+    "@emotion/css": "^11.13.0",
+    "@emotion/react": "^11.13.3",
     "inter-ui": "^3.19.3",
     "moment": "^2.29.1",
-    "prop-types": "^15.8.1",
     "protobufjs": "^7.1.1",
     "query-string": "^7.1.1",
-    "react-code-blocks": "^0.0.9-0",
-    "react-query": "^3.34.12",
-    "react-router-dom": "6",
-    "react-scripts": "^5.0.0",
+    "react-code-blocks": "^0.1.6",
+    "react-query": "^3.39.3",
+    "react-router-dom": "<6.4.0",
+    "react-scripts": "^5.0.1",
+    "tslib": "^2.3.1",
     "use-query-params": "^1.2.3",
     "zod": "^3.11.6"
   },
   "scripts": {
     "start": "npm run generate-protos && react-scripts start",
     "build": "npm run generate-protos && react-scripts build",
-    "build:lib": "npm run generate-protos && rimraf ./dist && tsc && rollup -c",
-    "build:lib-dev": "npm run generate-protos && rimraf ./dist && tsc && rollup -c && yalc publish -f",
+    "build:lib": "npm run generate-protos && rimraf ./dist && tsc --project ./tsconfig.build-lib.json && rollup -c",
+    "build:lib-dev": "npm run build:lib && yalc publish -f",
     "test": "npm run generate-protos && react-scripts test",
     "eject": "react-scripts eject",
     "generate-protos": "pbjs --no-encode -o src/protos.js -w commonjs -t static-module `find ../protos/feast/ -iname *.proto` && pbts -n protos -o src/protos.d.ts src/protos.js"
@@ -67,46 +56,42 @@
   },
   "jest": {
     "moduleNameMapper": {
-      "d3": "<rootDir>/node_modules/d3/dist/d3.min.js"
+      "chroma-js": "<rootDir>/node_modules/chroma-js/dist/chroma.min.cjs"
     }
   },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
-  },
+  "browserslist": [
+    "defaults"
+  ],
   "devDependencies": {
-    "@babel/core": "^7.17.5",
-    "@babel/preset-env": "^7.16.11",
-    "@babel/preset-react": "^7.16.7",
+    "@babel/core": "^7.25.8",
+    "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
+    "@babel/preset-env": "^7.25.8",
+    "@babel/preset-react": "^7.25.7",
     "@rollup/plugin-babel": "^5.3.1",
     "@rollup/plugin-commonjs": "^21.0.2",
     "@rollup/plugin-json": "^4.1.0",
     "@rollup/plugin-node-resolve": "^13.1.3",
     "@rollup/plugin-typescript": "^8.3.1",
-    "@testing-library/jest-dom": "^5.14.1",
-    "@testing-library/react": "^12.0.0",
-    "@testing-library/user-event": "^13.2.1",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.5.0",
+    "@testing-library/react": "^16.0.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/jest": "^27.0.1",
+    "@types/node": "^20.16.13",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
     "msw": "^0.36.8",
-    "protobufjs-cli": "^1.0.2",
-    "react": "^17.0.2",
-    "react-dom": "^17.0.2",
+    "protobufjs-cli": "^1.1.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "rimraf": "^3.0.2",
     "rollup": "^2.68.0",
-    "rollup-plugin-copy": "^3.4.0",
+    "rollup-plugin-copy": "^3.5.0",
     "rollup-plugin-import-css": "^3.0.2",
     "rollup-plugin-svg": "^2.0.0",
-    "rollup-plugin-svgo": "^1.1.0",
+    "rollup-plugin-svgo": "^2.0.0",
     "rollup-plugin-terser": "^7.0.2",
-    "tslib": "^2.3.1",
-    "typescript": "^4.4.2"
+    "typescript": "^4.9.5"
   },
   "description": "Web UI for the [Feast Feature Store](https://feast.dev/)",
   "repository": {
@@ -118,9 +103,10 @@
     "Feature",
     "Store"
   ],
-  "author": "tony@tecton.ai",
+  "author": "tony@feast.ai",
   "license": "Apache-2.0",
   "bugs": {
     "url": "https://github.com/feast-dev/feast/issues"
-  }
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

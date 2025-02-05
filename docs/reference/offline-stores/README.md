@@ -1,13 +1,13 @@
 # Offline stores
 
-Please see [Offline Store](../../getting-started/architecture-and-components/offline-store.md) for a conceptual explanation of offline stores.
+Please see [Offline Store](../../getting-started/components/offline-store.md) for a conceptual explanation of offline stores.
 
 {% content-ref url="overview.md" %}
 [overview.md](overview.md)
 {% endcontent-ref %}
 
-{% content-ref url="file.md" %}
-[file.md](file.md)
+{% content-ref url="dask.md" %}
+[dask.md](dask.md)
 {% endcontent-ref %}
 
 {% content-ref url="snowflake.md" %}

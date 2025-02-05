@@ -49,6 +49,10 @@ DUMMY_ENTITY = Entity(
     name=DUMMY_ENTITY_NAME,
     join_keys=[DUMMY_ENTITY_ID],
 )
+DUMMY_ENTITY_FIELD = Field(
+    name=DUMMY_ENTITY_ID,
+    dtype=from_value_type(ValueType.STRING),
+)
 
 
 @typechecked
@@ -206,6 +210,7 @@ class FeatureView(BaseFeatureView):
             description=description,
             tags=tags,
             owner=owner,
+            source=source,
         )
         self.online = online
         self.materialization_intervals = []
@@ -311,6 +316,16 @@ class FeatureView(BaseFeatureView):
 
         return cp
 
+    def update_materialization_intervals(
+        self, existing_materialization_intervals: List[Tuple[datetime, datetime]]
+    ):
+        if (
+            len(existing_materialization_intervals) > 0
+            and len(self.materialization_intervals) == 0
+        ):
+            for interval in existing_materialization_intervals:
+                self.materialization_intervals.append((interval[0], interval[1]))
+
     def to_proto(self) -> FeatureViewProto:
         """
         Converts a feature view object to its protobuf representation.
@@ -413,13 +428,15 @@ class FeatureView(BaseFeatureView):
 
         if len(feature_view.entities) != len(feature_view.entity_columns):
             warnings.warn(
-                f"There are some mismatches in your feature view's registered entities. Please check if you have applied your entities correctly."
+                f"There are some mismatches in your feature view: {feature_view.name} registered entities. Please check if you have applied your entities correctly."
                 f"Entities: {feature_view.entities} vs Entity Columns: {feature_view.entity_columns}"
             )
 
         # FeatureViewProjections are not saved in the FeatureView proto.
         # Create the default projection.
-        feature_view.projection = FeatureViewProjection.from_definition(feature_view)
+        feature_view.projection = FeatureViewProjection.from_feature_view_definition(
+            feature_view
+        )
 
         if feature_view_proto.meta.HasField("created_timestamp"):
             feature_view.created_timestamp = (
