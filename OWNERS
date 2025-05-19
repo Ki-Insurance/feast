@@ -1,10 +1,15 @@
+# This file is being used by RedHat for running e2e CI
+
 approvers:
-  - zhilingc
-  - pradithya
-  - woop
-  - tims
+- redhathameed
+- tmihalac
+- accorvin
+- amsharma3
+- franciscojavierarceo
+options: {}
 reviewers:
-  - zhilingc
-  - pradithya
-  - woop
-  - tims
+- redhathameed
+- tmihalac
+- accorvin
+- amsharma3
+- franciscojavierarceo
