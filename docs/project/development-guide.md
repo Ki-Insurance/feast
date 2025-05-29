@@ -14,9 +14,9 @@
     - [Pre-commit Hooks](#pre-commit-hooks)
     - [Signing off commits](#signing-off-commits)
     - [Incorporating upstream changes from master](#incorporating-upstream-changes-from-master)
-  - [Feast Python SDK / CLI](#feast-python-sdk--cli)
+  - [Feast Python SDK and CLI](#feast-python-sdk-and-cli)
     - [Environment Setup](#environment-setup)
-    - [Code Style \& Linting](#code-style--linting)
+    - [Code Style and Linting](#code-style-and-linting)
     - [Unit Tests](#unit-tests)
     - [Integration Tests](#integration-tests)
       - [Local integration tests](#local-integration-tests)
@@ -39,7 +39,7 @@
 ## Overview
 This guide is targeted at developers looking to contribute to Feast components in
 the main Feast repository:
-- [Feast Python SDK / CLI](#feast-python-sdk--cli)
+- [Feast Python SDK and CLI](#feast-python-sdk-and-cli)
 - [Feast Java Serving](#feast-java-serving)
 
 Please see [this page](../reference/codebase-structure.md) for more details on the structure of the entire codebase.
@@ -54,8 +54,8 @@ See [Contribution process](./contributing.md) and [Community](../community.md) f
 ## Making a pull request
 We use the convention that the assignee of a PR is the person with the next action.
 
-If the assignee is empty it means that no reviewer has been found yet. 
-If a reviewer has been found, they should also be the assigned the PR. 
+If the assignee is empty it means that no reviewer has been found yet.
+If a reviewer has been found, they should also be the assigned the PR.
 Finally, if there are comments to be addressed, the PR author should be the one assigned the PR.
 
 PRs that are submitted by the general public need to be identified as `ok-to-test`. Once enabled, [Prow](https://github.com/kubernetes/test-infra/tree/master/prow) will run a range of tests to verify the submission, after which community members will help to review the pull request.
@@ -118,55 +118,47 @@ Our preference is the use of `git rebase [master]` instead of `git merge` : `git
 Note that this means if you are midway through working through a PR and rebase, you'll have to force push:
 `git push --force-with-lease origin [branch name]`
 
-## Feast Python SDK / CLI
+## Feast Python SDK and CLI
 ### Environment Setup
-Setting up your development environment for Feast Python SDK / CLI:
-1. Ensure that you have Docker installed in your environment. Docker is used to provision service dependencies during testing, and build images for feature servers and other components.
+#### Tools
+- Docker:  Docker is used to provision service dependencies during testing, and build images for feature servers and other components.
    - Please note that we use [Docker with BuiltKit](https://docs.docker.com/develop/develop-images/build_enhancements/).
    - _Alternatively_ - To use [podman](https://podman.io/) on a Fedora or RHEL machine, follow this [guide](https://github.com/feast-dev/feast/issues/4190)
-2. Ensure that you have `make` and Python (3.9 or above) installed.
-3. _Recommended:_ Create a virtual environment to isolate development dependencies to be installed
-  ```sh
-  # create & activate a virtual environment
-  python -m venv venv/
-  source venv/bin/activate
-  ```
-4. (M1 Mac only): Follow the [dev guide](https://github.com/feast-dev/feast/issues/2105)
-5. Install uv
-It is recommended to use uv for managing python dependencies.
+- `make` is used to run various scripts
+- [uv](https://docs.astral.sh/) for managing python dependencies. [installation instructions](https://docs.astral.sh/uv/getting-started/installation/)
+- (M1 Mac only): Follow the [dev guide if you have issues](https://github.com/feast-dev/feast/issues/2105)
+- (Optional): Node & Yarn (needed for building the feast UI)
+- (Optional): [Pixi](https://pixi.sh/latest/) for recompile python lock files. Only when you make changes to requirements or simply want to update python lock files to reflect latest versioons.
+
+### Quick start
+- create a new virtual env: `uv venv --python 3.11` (Replace the python version with your desired version)
+- activate the venv: `source venv/bin/activate`
+- Install dependencies `make install-python-dependencies-dev`
+
+### building the UI
 ```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-or
-```ssh
-pip install uv
-```
-6. (Optional): Install Node & Yarn. Then run the following to build Feast UI artifacts for use in `feast ui`
-```
 make build-ui
 ```
-7. (Optional) install pixi
-pixi is necessary to run step 8 for all python versions at once.
-```sh
-curl -fsSL https://pixi.sh/install.sh | bash
-```
-8. (Optional): Recompile python lock files
-If you make changes to requirements or simply want to update python lock files to reflect latest versioons.
+
+### Recompiling python lock files
+Recompile python lock files. This only needs to be run when you make changes to requirements or simply want to update python lock files to reflect latest versions.
+
 ```sh
 make lock-python-dependencies-all
-``` 
-9. Install development dependencies for Feast Python SDK / CLI
-This will install package versions from the lock file, install editable version of feast and compile protobufs.
-```sh
-make install-python-ci-dependencies-uv
 ```
-10. Spin up Docker Image
+
+### Building protos
+```sh
+make compile-protos-python
+```
+
+### Building a docker image for development
 ```sh
 docker build -t docker-whale -f ./sdk/python/feast/infra/feature_servers/multicloud/Dockerfile .
 ```
 
-### Code Style & Linting
-Feast Python SDK / CLI codebase:
+### Code Style and Linting
+Feast Python SDK and CLI codebase:
 - Conforms to [Black code style](https://black.readthedocs.io/en/stable/the_black_code_style/current_style.html)
 - Has type annotations as enforced by `mypy`
 - Has imports sorted by `ruff` (see [isort (I) rules](https://docs.astral.sh/ruff/rules/#isort-i))
@@ -186,7 +178,7 @@ make lint-python
 > Setup [pre-commit hooks](#pre-commit-hooks) to automatically format and lint on commit.
 
 ### Unit Tests
-Unit tests (`pytest`) for the Feast Python SDK / CLI can run as follows:
+Unit tests (`pytest`) for the Feast Python SDK and CLI can run as follows:
 ```sh
 make test-python-unit
 ```
@@ -194,7 +186,7 @@ make test-python-unit
 > :warning: Local configuration can interfere with Unit tests and cause them to fail:
 > - Ensure [no AWS configuration is present](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html)
     > and [no AWS credentials can be accessed](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html#configuring-credentials) by `boto3`
-> - Ensure Feast Python SDK / CLI is not configured with configuration overrides (ie `~/.feast/config` should be empty).
+> - Ensure Feast Python SDK and CLI is not configured with configuration overrides (ie `~/.feast/config` should be empty).
 
 ### Integration Tests
 There are two sets of tests you can run:
@@ -401,7 +393,7 @@ It will:
 
 ### Testing with Github Actions workflows
 
-Please refer to the maintainers [doc](maintainers.md) if you would like to locally test out the github actions workflow changes. 
+Please refer to the maintainers [doc](maintainers.md) if you would like to locally test out the github actions workflow changes.
 This document will help you setup your fork to test the ci integration tests and other workflows without needing to make a pull request against feast-dev master.
 
 ## Feast Data Storage Format
@@ -410,4 +402,3 @@ Feast data storage contracts are documented in the following locations:
 
 * [Feast Offline Storage Format](https://github.com/feast-dev/feast/blob/master/docs/specs/offline_store_format.md): Used by BigQuery, Snowflake \(Future\), Redshift \(Future\).
 * [Feast Online Storage Format](https://github.com/feast-dev/feast/blob/master/docs/specs/online_store_format.md): Used by Redis, Google Datastore.
-

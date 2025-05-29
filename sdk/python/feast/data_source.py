@@ -176,7 +176,7 @@ class DataSource(ABC):
             was created, used for deduplicating rows.
         field_mapping (optional): A dictionary mapping of column names in this data
             source to feature names in a feature table or view. Only used for feature
-            columns, not entity or timestamp columns.
+            columns and timestamp columns, not entity columns.
         description (optional) A human-readable description.
         tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
         owner (optional): The owner of the data source, typically the email of the primary
@@ -343,6 +343,8 @@ class DataSource(ABC):
 
 @typechecked
 class KafkaSource(DataSource):
+    """A KafkaSource allow users to register Kafka streams as data sources."""
+
     def __init__(
         self,
         *,
@@ -461,9 +463,11 @@ class KafkaSource(DataSource):
             description=data_source.description,
             tags=dict(data_source.tags),
             owner=data_source.owner,
-            batch_source=DataSource.from_proto(data_source.batch_source)
-            if data_source.batch_source
-            else None,
+            batch_source=(
+                DataSource.from_proto(data_source.batch_source)
+                if data_source.batch_source
+                else None
+            ),
         )
 
     def to_proto(self) -> DataSourceProto:
@@ -524,12 +528,19 @@ class RequestSource(DataSource):
         *,
         name: str,
         schema: List[Field],
+        timestamp_field: Optional[str] = None,
         description: Optional[str] = "",
         tags: Optional[Dict[str, str]] = None,
         owner: Optional[str] = "",
     ):
         """Creates a RequestSource object."""
-        super().__init__(name=name, description=description, tags=tags, owner=owner)
+        super().__init__(
+            name=name,
+            timestamp_field=timestamp_field,
+            description=description,
+            tags=tags,
+            owner=owner,
+        )
         self.schema = schema
 
     def validate(self, config: RepoConfig):
@@ -570,6 +581,7 @@ class RequestSource(DataSource):
         return RequestSource(
             name=data_source.name,
             schema=list_schema,
+            timestamp_field=data_source.timestamp_field,
             description=data_source.description,
             tags=dict(data_source.tags),
             owner=data_source.owner,
@@ -593,6 +605,7 @@ class RequestSource(DataSource):
             tags=self.tags,
             owner=self.owner,
         )
+        data_source_proto.timestamp_field = self.timestamp_field
         data_source_proto.request_data_options.schema.extend(schema_pb)
 
         return data_source_proto
@@ -607,6 +620,8 @@ class RequestSource(DataSource):
 
 @typechecked
 class KinesisSource(DataSource):
+    """A KinesisSource allows users to register Kinesis streams as data sources."""
+
     def validate(self, config: RepoConfig):
         raise NotImplementedError
 
@@ -630,9 +645,11 @@ class KinesisSource(DataSource):
             description=data_source.description,
             tags=dict(data_source.tags),
             owner=data_source.owner,
-            batch_source=DataSource.from_proto(data_source.batch_source)
-            if data_source.batch_source
-            else None,
+            batch_source=(
+                DataSource.from_proto(data_source.batch_source)
+                if data_source.batch_source
+                else None
+            ),
         )
 
     @staticmethod
@@ -657,6 +674,25 @@ class KinesisSource(DataSource):
         owner: Optional[str] = "",
         batch_source: Optional[DataSource] = None,
     ):
+        """
+        Args:
+            name: The unique name of the Kinesis source.
+            record_format: The record format of the Kinesis stream.
+            region: The AWS region of the Kinesis stream.
+            stream_name: The name of the Kinesis stream.
+            timestamp_field: Event timestamp field used for point-in-time joins of
+            feature values.
+            created_timestamp_column:  Timestamp column indicating when the row
+            was created, used for deduplicating rows.
+            field_mapping: A dictionary mapping of column names in this data
+            source to feature names in a feature table or view. Only used for feature
+            columns, not entity or timestamp columns.
+            description: A human-readable description.
+            tags: A dictionary of key-value pairs to store arbitrary metadata.
+            owner: The owner of the Kinesis source, typically the email of the primary
+            maintainer.
+            batch_source: A DataSource backing the Kinesis stream (used for retrieving historical features).
+        """
         if record_format is None:
             raise ValueError("Record format must be specified for kinesis source")
 

@@ -19,22 +19,6 @@ Subpackages
 Submodules
 ----------
 
-feast.infra.aws module
-----------------------
-
-.. automodule:: feast.infra.aws
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-feast.infra.gcp module
-----------------------
-
-.. automodule:: feast.infra.gcp
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 feast.infra.infra\_object module
 --------------------------------
 
@@ -51,14 +35,6 @@ feast.infra.key\_encoding\_utils module
    :undoc-members:
    :show-inheritance:
 
-feast.infra.local module
-------------------------
-
-.. automodule:: feast.infra.local
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 feast.infra.passthrough\_provider module
 ----------------------------------------
 
@@ -71,6 +47,14 @@ feast.infra.provider module
 ---------------------------
 
 .. automodule:: feast.infra.provider
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+feast.infra.supported\_async\_methods module
+--------------------------------------------
+
+.. automodule:: feast.infra.supported_async_methods
    :members:
    :undoc-members:
    :show-inheritance:

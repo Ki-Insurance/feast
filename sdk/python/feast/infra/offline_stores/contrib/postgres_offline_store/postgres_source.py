@@ -4,7 +4,7 @@ from typing import Callable, Dict, Iterable, Optional, Tuple
 from typeguard import typechecked
 
 from feast.data_source import DataSource
-from feast.errors import DataSourceNoNameException
+from feast.errors import DataSourceNoNameException, ZeroColumnQueryResult
 from feast.infra.utils.postgres.connection_utils import _get_conn
 from feast.protos.feast.core.DataSource_pb2 import DataSource as DataSourceProto
 from feast.protos.feast.core.SavedDataset_pb2 import (
@@ -18,6 +18,8 @@ from feast.value_type import ValueType
 
 @typechecked
 class PostgreSQLSource(DataSource):
+    """A PostgreSQLSource object defines a data source that a PostgreSQLOfflineStore class can use."""
+
     def __init__(
         self,
         name: Optional[str] = None,
@@ -30,6 +32,24 @@ class PostgreSQLSource(DataSource):
         tags: Optional[Dict[str, str]] = None,
         owner: Optional[str] = "",
     ):
+        """Creates a PostgreSQLSource object.
+
+        Args:
+            name: Name of PostgreSQLSource, which should be unique within a project.
+            query: SQL query that will be used to fetch the data.
+            table: Table name.
+            timestamp_field (optional): Event timestamp field used for point-in-time joins of
+                feature values.
+            created_timestamp_column (optional): Timestamp column indicating when the row
+                was created, used for deduplicating rows.
+            field_mapping (optional): A dictionary mapping of column names in this data
+                source to feature names in a feature table or view. Only used for feature
+                columns, not entity or timestamp columns.
+            description (optional): A human-readable description.
+            tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
+            owner (optional): The owner of the data source, typically the email of the primary
+                maintainer.
+        """
         self._postgres_options = PostgreSQLOptions(name=name, query=query, table=table)
 
         # If no name, use the table as the default name.
@@ -111,7 +131,11 @@ class PostgreSQLSource(DataSource):
         self, config: RepoConfig
     ) -> Iterable[Tuple[str, str]]:
         with _get_conn(config.offline_store) as conn, conn.cursor() as cur:
-            cur.execute(f"SELECT * FROM {self.get_table_query_string()} AS sub LIMIT 0")
+            query = f"SELECT * FROM {self.get_table_query_string()} AS sub LIMIT 0"
+            cur.execute(query)
+            if not cur.description:
+                raise ZeroColumnQueryResult(query)
+
             return (
                 (c.name, pg_type_code_to_pg_type(c.type_code)) for c in cur.description
             )

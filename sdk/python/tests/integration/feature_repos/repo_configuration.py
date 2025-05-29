@@ -11,16 +11,28 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import pandas as pd
 import pytest
 
-from feast import FeatureStore, FeatureView, OnDemandFeatureView, driver_test_data
+from feast import (
+    FeatureStore,
+    FeatureView,
+    OnDemandFeatureView,
+    StreamFeatureView,
+    driver_test_data,
+)
 from feast.constants import FULL_REPO_CONFIGS_MODULE_ENV_NAME
 from feast.data_source import DataSource
 from feast.errors import FeastModuleImportError
+from feast.feature_service import FeatureService
 from feast.infra.feature_servers.base_config import (
     BaseFeatureServerConfig,
     FeatureLoggingConfig,
 )
 from feast.infra.feature_servers.local_process.config import LocalFeatureServerConfig
+from feast.permissions.action import AuthzedAction
+from feast.permissions.auth_model import OidcClientAuthConfig
+from feast.permissions.permission import Permission
+from feast.permissions.policy import RoleBasedPolicy
 from feast.repo_config import RegistryConfig, RepoConfig
+from feast.utils import _utc_now
 from tests.integration.feature_repos.integration_test_repo_config import (
     IntegrationTestRepoConfig,
     RegistryLocation,
@@ -35,7 +47,9 @@ from tests.integration.feature_repos.universal.data_sources.file import (
     DuckDBDataSourceCreator,
     DuckDBDeltaDataSourceCreator,
     FileDataSourceCreator,
+    RemoteOfflineOidcAuthStoreDataSourceCreator,
     RemoteOfflineStoreDataSourceCreator,
+    RemoteOfflineTlsStoreDataSourceCreator,
 )
 from tests.integration.feature_repos.universal.data_sources.redshift import (
     RedshiftDataSourceCreator,
@@ -64,6 +78,9 @@ from tests.integration.feature_repos.universal.online_store.datastore import (
 from tests.integration.feature_repos.universal.online_store.dynamodb import (
     DynamoDBOnlineStoreCreator,
 )
+from tests.integration.feature_repos.universal.online_store.milvus import (
+    MilvusOnlineStoreCreator,
+)
 from tests.integration.feature_repos.universal.online_store.redis import (
     RedisOnlineStoreCreator,
 )
@@ -72,6 +89,7 @@ from tests.integration.feature_repos.universal.online_store_creator import (
 )
 
 DYNAMO_CONFIG = {"type": "dynamodb", "region": "us-west-2"}
+MILVUS_CONFIG = {"type": "milvus", "embedding_dim": "2"}
 REDIS_CONFIG = {"type": "redis", "connection_string": "localhost:6379,db=0"}
 REDIS_CLUSTER_CONFIG = {
     "type": "redis",
@@ -97,12 +115,6 @@ BIGTABLE_CONFIG = {
     "instance": os.getenv("BIGTABLE_INSTANCE_ID", "feast-integration-tests"),
 }
 
-ROCKSET_CONFIG = {
-    "type": "rockset",
-    "api_key": os.getenv("ROCKSET_APIKEY", ""),
-    "host": os.getenv("ROCKSET_APISERVER", "api.rs2.usw2.rockset.com"),
-}
-
 IKV_CONFIG = {
     "type": "ikv",
     "account_id": os.getenv("IKV_ACCOUNT_ID", ""),
@@ -123,6 +135,8 @@ AVAILABLE_OFFLINE_STORES: List[Tuple[str, Type[DataSourceCreator]]] = [
     ("local", DuckDBDataSourceCreator),
     ("local", DuckDBDeltaDataSourceCreator),
     ("local", RemoteOfflineStoreDataSourceCreator),
+    ("local", RemoteOfflineOidcAuthStoreDataSourceCreator),
+    ("local", RemoteOfflineTlsStoreDataSourceCreator),
 ]
 
 if os.getenv("FEAST_IS_LOCAL_TEST", "False") == "True":
@@ -132,7 +146,6 @@ if os.getenv("FEAST_IS_LOCAL_TEST", "False") == "True":
             # ("local", DuckDBDeltaS3DataSourceCreator),
         ]
     )
-
 
 AVAILABLE_ONLINE_STORES: Dict[
     str, Tuple[Union[str, Dict[Any, Any]], Optional[Type[OnlineStoreCreator]]]
@@ -153,16 +166,12 @@ if os.getenv("FEAST_IS_LOCAL_TEST", "False") != "True":
     AVAILABLE_ONLINE_STORES["datastore"] = ("datastore", None)
     AVAILABLE_ONLINE_STORES["snowflake"] = (SNOWFLAKE_CONFIG, None)
     AVAILABLE_ONLINE_STORES["bigtable"] = (BIGTABLE_CONFIG, None)
-    # Uncomment to test using private Rockset account. Currently not enabled as
-    # there is no dedicated Rockset instance for CI testing and there is no
-    # containerized version of Rockset.
-    # AVAILABLE_ONLINE_STORES["rockset"] = (ROCKSET_CONFIG, None)
+    AVAILABLE_ONLINE_STORES["milvus"] = (MILVUS_CONFIG, None)
 
     # Uncomment to test using private IKV account. Currently not enabled as
     # there is no dedicated IKV instance for CI testing and there is no
     # containerized version of IKV.
     # AVAILABLE_ONLINE_STORES["ikv"] = (IKV_CONFIG, None)
-
 
 full_repo_configs_module = os.environ.get(FULL_REPO_CONFIGS_MODULE_ENV_NAME)
 if full_repo_configs_module is not None:
@@ -199,13 +208,13 @@ if full_repo_configs_module is not None:
             for c in FULL_REPO_CONFIGS
         }
 
-
 # Replace online stores with emulated online stores if we're running local integration tests
 if os.getenv("FEAST_LOCAL_ONLINE_CONTAINER", "False").lower() == "true":
     replacements: Dict[
         str, Tuple[Union[str, Dict[str, str]], Optional[Type[OnlineStoreCreator]]]
     ] = {
         "redis": (REDIS_CONFIG, RedisOnlineStoreCreator),
+        "milvus": (MILVUS_CONFIG, MilvusOnlineStoreCreator),
         "dynamodb": (DYNAMO_CONFIG, DynamoDBOnlineStoreCreator),
         "datastore": ("datastore", DatastoreOnlineStoreCreator),
         "bigtable": ("bigtable", BigtableOnlineStoreCreator),
@@ -412,7 +421,7 @@ class Environment:
     fixture_request: Optional[pytest.FixtureRequest] = None
 
     def __post_init__(self):
-        self.end_date = datetime.utcnow().replace(microsecond=0, second=0, minute=0)
+        self.end_date = _utc_now().replace(microsecond=0, second=0, minute=0)
         self.start_date: datetime = self.end_date - timedelta(days=3)
 
     def setup(self):
@@ -431,6 +440,7 @@ class Environment:
             feature_server=self.feature_server,
             entity_key_serialization_version=self.entity_key_serialization_version,
         )
+
         self.feature_store = FeatureStore(config=self.config)
 
     def teardown(self):
@@ -438,6 +448,71 @@ class Environment:
         self.data_source_creator.teardown()
         if self.online_store_creator:
             self.online_store_creator.teardown()
+
+
+@dataclass
+class OfflineServerPermissionsEnvironment(Environment):
+    def setup(self):
+        self.data_source_creator.setup(self.registry)
+        keycloak_url = self.data_source_creator.get_keycloak_url()
+        auth_config = OidcClientAuthConfig(
+            client_id="feast-integration-client",
+            type="oidc",
+            auth_discovery_url=f"{keycloak_url}/realms/master/.well-known"
+            f"/openid-configuration",
+            client_secret="feast-integration-client-secret",
+            username="reader_writer",
+            password="password",
+        )
+        self.config = RepoConfig(
+            registry=self.registry,
+            project=self.project,
+            provider=self.provider,
+            offline_store=self.data_source_creator.create_offline_store_config(),
+            online_store=self.online_store_creator.create_online_store()
+            if self.online_store_creator
+            else self.online_store,
+            batch_engine=self.batch_engine,
+            repo_path=self.repo_dir_name,
+            feature_server=self.feature_server,
+            entity_key_serialization_version=self.entity_key_serialization_version,
+            auth=auth_config,
+        )
+
+        self.feature_store = FeatureStore(config=self.config)
+        permissions_list = [
+            Permission(
+                name="offline_fv_perm",
+                types=FeatureView,
+                policy=RoleBasedPolicy(roles=["writer"]),
+                actions=[AuthzedAction.READ_OFFLINE, AuthzedAction.WRITE_OFFLINE],
+            ),
+            Permission(
+                name="offline_odfv_perm",
+                types=OnDemandFeatureView,
+                policy=RoleBasedPolicy(roles=["writer"]),
+                actions=[AuthzedAction.READ_OFFLINE, AuthzedAction.WRITE_OFFLINE],
+            ),
+            Permission(
+                name="offline_sfv_perm",
+                types=StreamFeatureView,
+                policy=RoleBasedPolicy(roles=["writer"]),
+                actions=[AuthzedAction.READ_OFFLINE, AuthzedAction.WRITE_OFFLINE],
+            ),
+            Permission(
+                name="offline_fs_perm",
+                types=FeatureService,
+                policy=RoleBasedPolicy(roles=["writer"]),
+                actions=[AuthzedAction.READ_OFFLINE, AuthzedAction.WRITE_OFFLINE],
+            ),
+            Permission(
+                name="offline_datasource_perm",
+                types=DataSource,
+                policy=RoleBasedPolicy(roles=["writer"]),
+                actions=[AuthzedAction.READ_OFFLINE, AuthzedAction.WRITE_OFFLINE],
+            ),
+        ]
+        self.feature_store.apply(permissions_list)
 
 
 def table_name_from_data_source(ds: DataSource) -> Optional[str]:
@@ -474,27 +549,12 @@ def construct_test_environment(
     else:
         online_creator = None
 
-    if test_repo_config.python_feature_server and test_repo_config.provider == "aws":
-        from feast.infra.feature_servers.aws_lambda.config import (
-            AwsLambdaFeatureServerConfig,
-        )
-
-        feature_server: Any = AwsLambdaFeatureServerConfig(
-            enabled=True,
-            execution_role_name=os.getenv(
-                "AWS_LAMBDA_ROLE",
-                "arn:aws:iam::402087665549:role/lambda_execution_role",
-            ),
-        )
-    else:
-        feature_server = LocalFeatureServerConfig(
-            feature_logging=FeatureLoggingConfig(enabled=True)
-        )
+    feature_server = LocalFeatureServerConfig(
+        feature_logging=FeatureLoggingConfig(enabled=True)
+    )
 
     repo_dir_name = tempfile.mkdtemp()
-    if (
-        test_repo_config.python_feature_server and test_repo_config.provider == "aws"
-    ) or test_repo_config.registry_location == RegistryLocation.S3:
+    if test_repo_config.registry_location == RegistryLocation.S3:
         aws_registry_path = os.getenv(
             "AWS_REGISTRY_PATH", "s3://feast-int-bucket/registries"
         )
@@ -505,23 +565,35 @@ def construct_test_environment(
             cache_ttl_seconds=1,
         )
 
-    environment = Environment(
-        name=project,
-        provider=test_repo_config.provider,
-        data_source_creator=offline_creator,
-        python_feature_server=test_repo_config.python_feature_server,
-        worker_id=worker_id,
-        online_store_creator=online_creator,
-        fixture_request=fixture_request,
-        project=project,
-        registry=registry,
-        feature_server=feature_server,
-        entity_key_serialization_version=entity_key_serialization_version,
-        repo_dir_name=repo_dir_name,
-        batch_engine=test_repo_config.batch_engine,
-        online_store=test_repo_config.online_store,
+    online_store = (
+        test_repo_config.online_store.get("type")
+        if isinstance(test_repo_config.online_store, dict)
+        else test_repo_config.online_store
     )
+    if online_store in ["milvus", "pgvector", "qdrant", "elasticsearch"]:
+        entity_key_serialization_version = 3
 
+    environment_params = {
+        "name": project,
+        "provider": test_repo_config.provider,
+        "data_source_creator": offline_creator,
+        "python_feature_server": test_repo_config.python_feature_server,
+        "worker_id": worker_id,
+        "online_store_creator": online_creator,
+        "fixture_request": fixture_request,
+        "project": project,
+        "registry": registry,
+        "feature_server": feature_server,
+        "entity_key_serialization_version": entity_key_serialization_version,
+        "repo_dir_name": repo_dir_name,
+        "batch_engine": test_repo_config.batch_engine,
+        "online_store": test_repo_config.online_store,
+    }
+
+    if not isinstance(offline_creator, RemoteOfflineOidcAuthStoreDataSourceCreator):
+        environment = Environment(**environment_params)  # type: ignore
+    else:
+        environment = OfflineServerPermissionsEnvironment(**environment_params)  # type: ignore
     return environment
 
 

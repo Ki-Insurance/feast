@@ -29,7 +29,7 @@ Feature views once they are used by a feature service are intended to be immutab
 
 ### What is the difference between data sources and the offline store?
 
-The data source itself defines the underlying data warehouse table in which the features are stored. The offline store interface defines the APIs required to make an arbitrary compute layer work for Feast (e.g. pulling features given a set of feature views from their sources, exporting the data set results to different formats). Please see [data sources](concepts/data-ingestion.md) and [offline store](architecture-and-components/offline-store.md) for more details.
+The data source itself defines the underlying data warehouse table in which the features are stored. The offline store interface defines the APIs required to make an arbitrary compute layer work for Feast (e.g. pulling features given a set of feature views from their sources, exporting the data set results to different formats). Please see [data sources](concepts/data-ingestion.md) and [offline store](components/offline-store.md) for more details.
 
 ### Is it possible to have offline and online stores from different providers?
 
@@ -55,7 +55,7 @@ Yes. In earlier versions of Feast, we used Feast Spark to manage ingestion from 
 
 There are several kinds of transformations:
 
-* On demand transformations (See [docs](../reference/alpha-on-demand-feature-view.md))
+* On demand transformations (See [docs](../reference/beta-on-demand-feature-view.md))
   * These transformations are Pandas transformations run on batch data when you call `get_historical_features` and at online serving time when you call \`get\_online\_features.
   * Note that if you use push sources to ingest streaming features, these transformations will execute on the fly as well
 * Batch transformations (WIP, see [RFC](https://docs.google.com/document/d/1964OkzuBljifDvkV-0fakp2uaijnVzdwWNGdz7Vz50A/edit))
@@ -69,10 +69,6 @@ Yes. See [documentation](../reference/alpha-web-ui.md).
 ### Does Feast support composite keys?
 
 A feature view can be defined with multiple entities. Since each entity has a unique join\_key, using multiple entities will achieve the effect of a composite key.
-
-### How does Feast compare with Tecton?
-
-Please see a detailed comparison of Feast vs. Tecton [here](https://www.tecton.ai/feast/). For another comparison, please see [here](https://mlops.community/learn/feature-store/).
 
 ### What are the performance/latency characteristics of Feast?
 
@@ -95,7 +91,7 @@ The list of supported offline and online stores can be found [here](../reference
 
 ### Does Feast support using different clouds for offline vs online stores?
 
-Yes. Using a GCP or AWS provider in `feature_store.yaml` primarily sets default offline / online stores and configures where the remote registry file can live (Using the AWS provider also allows for deployment to AWS Lambda). You can override the offline and online stores to be in different clouds if you wish.
+Yes. Using a GCP or AWS provider in `feature_store.yaml` primarily sets default offline / online stores and configures where the remote registry file can live. You can override the offline and online stores to be in different clouds if you wish.
 
 ### What is the difference between a data source and an offline store?
 

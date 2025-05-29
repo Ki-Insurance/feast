@@ -13,7 +13,7 @@ import {
 // declare which API requests to mock
 const server = setupServer(
   projectsListWithDefaultProject,
-  creditHistoryRegistry
+  creditHistoryRegistry,
 );
 
 // establish API mocking before all tests
@@ -25,6 +25,8 @@ afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
 test("in a full App render, it shows the right initial project", async () => {
+  const user = userEvent.setup();
+
   render(<FeastUISansProviders />);
 
   const select = await screen.findByRole("combobox", {
@@ -38,7 +40,7 @@ test("in a full App render, it shows the right initial project", async () => {
     name: "Top Level",
   });
 
-  within(topLevelNavigation).getByDisplayValue("Credit Score Project");
+  await within(topLevelNavigation).findByDisplayValue("Credit Score Project");
 
   expect(options.length).toBe(1);
 
@@ -54,13 +56,13 @@ test("in a full App render, it shows the right initial project", async () => {
 
   // Do the select option user event
   // https://stackoverflow.com/a/69478957
-  userEvent.selectOptions(
+  await user.selectOptions(
     // Find the select element
     within(topLevelNavigation).getByRole("combobox"),
     // Find and select the Ireland option
     within(topLevelNavigation).getByRole("option", {
       name: "Credit Score Project",
-    })
+    }),
   );
 
   // The selection should updated
@@ -68,7 +70,7 @@ test("in a full App render, it shows the right initial project", async () => {
     within(topLevelNavigation).getByRole("option", {
       name: "Credit Score Project",
       selected: true,
-    })
+    }),
   ).toBeInTheDocument();
 
   // ... and the new heading should appear

@@ -1,25 +1,26 @@
 import os
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, List, Literal, Optional, Sequence, Union
 
 import click
 import pandas as pd
 from colorama import Fore, Style
 from pydantic import ConfigDict, Field, StrictStr
-from pytz import utc
 from tqdm import tqdm
 
 import feast
 from feast.batch_feature_view import BatchFeatureView
 from feast.entity import Entity
 from feast.feature_view import DUMMY_ENTITY_ID, FeatureView
-from feast.infra.materialization.batch_materialization_engine import (
-    BatchMaterializationEngine,
+from feast.infra.common.materialization_job import (
     MaterializationJob,
     MaterializationJobStatus,
     MaterializationTask,
+)
+from feast.infra.materialization.batch_materialization_engine import (
+    BatchMaterializationEngine,
 )
 from feast.infra.offline_stores.offline_store import OfflineStore
 from feast.infra.online_stores.online_store import OnlineStore
@@ -32,6 +33,7 @@ from feast.infra.utils.snowflake.snowflake_utils import (
     get_snowflake_online_store_path,
     package_snowpark_zip,
 )
+from feast.on_demand_feature_view import OnDemandFeatureView
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
@@ -47,7 +49,10 @@ class SnowflakeMaterializationEngineConfig(FeastConfigBaseModel):
     """ Type selector"""
 
     config_path: Optional[str] = os.path.expanduser("~/.snowsql/config")
-    """ Snowflake config path -- absolute path required (Cant use ~)"""
+    """ Snowflake snowsql config path -- absolute path required (Cant use ~)"""
+
+    connection_name: Optional[str] = None
+    """ Snowflake connector connection name -- typically defined in ~/.snowflake/connections.toml """
 
     account: Optional[str] = None
     """ Snowflake deployment identifier -- drop .snowflakecomputing.com"""
@@ -69,6 +74,9 @@ class SnowflakeMaterializationEngineConfig(FeastConfigBaseModel):
 
     private_key: Optional[str] = None
     """ Snowflake private key file path"""
+
+    private_key_content: Optional[bytes] = None
+    """ Snowflake private key stored as bytes"""
 
     private_key_passphrase: Optional[str] = None
     """ Snowflake private key file passphrase"""
@@ -115,10 +123,10 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
         self,
         project: str,
         views_to_delete: Sequence[
-            Union[BatchFeatureView, StreamFeatureView, FeatureView]
+            Union[BatchFeatureView, StreamFeatureView, FeatureView, OnDemandFeatureView]
         ],
         views_to_keep: Sequence[
-            Union[BatchFeatureView, StreamFeatureView, FeatureView]
+            Union[BatchFeatureView, StreamFeatureView, FeatureView, OnDemandFeatureView]
         ],
         entities_to_delete: Sequence[Entity],
         entities_to_keep: Sequence[Entity],
@@ -126,16 +134,16 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
         stage_context = f'"{self.repo_config.batch_engine.database}"."{self.repo_config.batch_engine.schema_}"'
         stage_path = f'{stage_context}."feast_{project}"'
         with GetSnowflakeConnection(self.repo_config.batch_engine) as conn:
-            query = f"SHOW STAGES IN {stage_context}"
+            query = f"SHOW USER FUNCTIONS LIKE 'FEAST_{project.upper()}%' IN SCHEMA {stage_context}"
             cursor = execute_snowflake_statement(conn, query)
-            stage_list = pd.DataFrame(
+            function_list = pd.DataFrame(
                 cursor.fetchall(),
                 columns=[column.name for column in cursor.description],
             )
 
-            # if the stage already exists,
+            # if the SHOW FUNCTIONS query returns results,
             # assumes that the materialization functions have been deployed
-            if f"feast_{project}" in stage_list["name"].tolist():
+            if len(function_list.index) > 0:
                 click.echo(
                     f"Materialization functions for {Style.BRIGHT + Fore.GREEN}{project}{Style.RESET_ALL} already detected."
                 )
@@ -147,7 +155,7 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
             )
             click.echo()
 
-            query = f"CREATE STAGE {stage_path}"
+            query = f"CREATE STAGE IF NOT EXISTS {stage_path}"
             execute_snowflake_statement(conn, query)
 
             copy_path, zip_path = package_snowpark_zip(project)
@@ -200,9 +208,9 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
         online_store: OnlineStore,
         **kwargs,
     ):
-        assert (
-            repo_config.offline_store.type == "snowflake.offline"
-        ), "To use SnowflakeMaterializationEngine, you must use Snowflake as an offline store."
+        assert repo_config.offline_store.type == "snowflake.offline", (
+            "To use SnowflakeMaterializationEngine, you must use Snowflake as an offline store."
+        )
 
         super().__init__(
             repo_config=repo_config,
@@ -235,10 +243,11 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
         project: str,
         tqdm_builder: Callable[[int], tqdm],
     ):
-        assert (
-            isinstance(feature_view, BatchFeatureView)
-            or isinstance(feature_view, FeatureView)
-        ), "Snowflake can only materialize FeatureView & BatchFeatureView feature view types."
+        assert isinstance(feature_view, BatchFeatureView) or isinstance(
+            feature_view, FeatureView
+        ), (
+            "Snowflake can only materialize FeatureView & BatchFeatureView feature view types."
+        )
 
         entities = []
         for entity_name in feature_view.entities:
@@ -273,15 +282,24 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
                     execute_snowflake_statement(conn, query).fetchall()[0][0]
                     / 1_000_000_000
                 )
-            if last_commit_change_time < start_date.astimezone(tz=utc).timestamp():
+            if (
+                last_commit_change_time
+                < start_date.astimezone(tz=timezone.utc).timestamp()
+            ):
                 return SnowflakeMaterializationJob(
                     job_id=job_id, status=MaterializationJobStatus.SUCCEEDED
                 )
 
             fv_latest_values_sql = offline_job.to_sql()
 
+            if feature_view.entity_columns:
+                first_feature_view_entity_name = getattr(
+                    feature_view.entity_columns[0], "name", None
+                )
+            else:
+                first_feature_view_entity_name = None
             if (
-                feature_view.entity_columns[0].name == DUMMY_ENTITY_ID
+                first_feature_view_entity_name == DUMMY_ENTITY_ID
             ):  # entityless Feature View's placeholder entity
                 entities_to_write = 1
             else:
@@ -405,7 +423,7 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
               {serial_func.upper()}({entity_names}, {entity_data}, {entity_types}) AS "entity_key",
               {features_str},
               "{feature_view.batch_source.timestamp_field}"
-              {fv_created_str if fv_created_str else ''}
+              {fv_created_str if fv_created_str else ""}
             FROM (
               {fv_latest_mapped_values_sql}
             )
@@ -445,7 +463,7 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
                   "feature_name",
                   "feature_value" AS "value",
                   "{feature_view.batch_source.timestamp_field}" AS "event_ts"
-                  {fv_created_str + ' AS "created_ts"' if fv_created_str else ''}
+                  {fv_created_str + ' AS "created_ts"' if fv_created_str else ""}
                 FROM (
                   {materialization_sql}
                 )
@@ -457,16 +475,16 @@ class SnowflakeMaterializationEngine(BatchMaterializationEngine):
                   online_table."feature_name" = latest_values."feature_name",
                   online_table."value" = latest_values."value",
                   online_table."event_ts" = latest_values."event_ts"
-                  {',online_table."created_ts" = latest_values."created_ts"' if fv_created_str else ''}
+                  {',online_table."created_ts" = latest_values."created_ts"' if fv_created_str else ""}
               WHEN NOT MATCHED THEN
-                INSERT ("entity_feature_key", "entity_key", "feature_name", "value", "event_ts" {', "created_ts"' if fv_created_str else ''})
+                INSERT ("entity_feature_key", "entity_key", "feature_name", "value", "event_ts" {', "created_ts"' if fv_created_str else ""})
                 VALUES (
                   latest_values."entity_feature_key",
                   latest_values."entity_key",
                   latest_values."feature_name",
                   latest_values."value",
                   latest_values."event_ts"
-                  {',latest_values."created_ts"' if fv_created_str else ''}
+                  {',latest_values."created_ts"' if fv_created_str else ""}
                 )
         """
 

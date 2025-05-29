@@ -45,13 +45,14 @@ from feast.infra.registry.base_registry import BaseRegistry
 from feast.on_demand_feature_view import OnDemandFeatureView
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.saved_dataset import SavedDatasetStorage
-from feast.utils import get_user_agent
+from feast.utils import _utc_now, get_user_agent
 
 from .bigquery_source import (
     BigQueryLoggingDestination,
     BigQuerySource,
     SavedDatasetBigQueryStorage,
 )
+from .offline_utils import get_timestamp_filter_sql
 
 try:
     from google.api_core import client_info as http_client_info
@@ -59,13 +60,22 @@ try:
     from google.auth.exceptions import DefaultCredentialsError
     from google.cloud import bigquery
     from google.cloud.bigquery import Client, SchemaField, Table
-    from google.cloud.bigquery._pandas_helpers import ARROW_SCALAR_IDS_TO_BQ
     from google.cloud.storage import Client as StorageClient
 
 except ImportError as e:
     from feast.errors import FeastExtrasDependencyImportError
 
     raise FeastExtrasDependencyImportError("gcp", str(e))
+
+try:
+    from google.cloud.bigquery._pyarrow_helpers import _ARROW_SCALAR_IDS_TO_BQ
+except ImportError:
+    try:
+        from google.cloud.bigquery._pandas_helpers import (  # type: ignore
+            ARROW_SCALAR_IDS_TO_BQ as _ARROW_SCALAR_IDS_TO_BQ,
+        )
+    except ImportError as e:
+        raise FeastExtrasDependencyImportError("gcp", str(e))
 
 
 def get_http_client_info():
@@ -105,7 +115,7 @@ class BigQueryOfflineStoreConfig(FeastConfigBaseModel):
 
     @field_validator("billing_project_id")
     def project_id_exists(cls, v, values, **kwargs):
-        if v and not values["project_id"]:
+        if v and not values.data["project_id"]:
             raise ValueError(
                 "please specify project_id if billing_project_id is specified"
             )
@@ -128,7 +138,9 @@ class BigQueryOfflineStore(OfflineStore):
         assert isinstance(data_source, BigQuerySource)
         from_expression = data_source.get_table_query_string()
 
-        partition_by_join_key_string = ", ".join(join_key_columns)
+        partition_by_join_key_string = ", ".join(
+            BigQueryOfflineStore._escape_query_columns(join_key_columns)
+        )
         if partition_by_join_key_string != "":
             partition_by_join_key_string = (
                 "PARTITION BY " + partition_by_join_key_string
@@ -137,7 +149,11 @@ class BigQueryOfflineStore(OfflineStore):
         if created_timestamp_column:
             timestamps.append(created_timestamp_column)
         timestamp_desc_string = " DESC, ".join(timestamps) + " DESC"
-        field_string = ", ".join(join_key_columns + feature_name_columns + timestamps)
+        field_string = ", ".join(
+            BigQueryOfflineStore._escape_query_columns(join_key_columns)
+            + BigQueryOfflineStore._escape_query_columns(feature_name_columns)
+            + timestamps
+        )
         project_id = (
             config.offline_store.billing_project_id or config.offline_store.project_id
         )
@@ -173,8 +189,9 @@ class BigQueryOfflineStore(OfflineStore):
         join_key_columns: List[str],
         feature_name_columns: List[str],
         timestamp_field: str,
-        start_date: datetime,
-        end_date: datetime,
+        created_timestamp_column: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
     ) -> RetrievalJob:
         assert isinstance(config.offline_store, BigQueryOfflineStoreConfig)
         assert isinstance(data_source, BigQuerySource)
@@ -186,13 +203,26 @@ class BigQueryOfflineStore(OfflineStore):
             project=project_id,
             location=config.offline_store.location,
         )
+
+        timestamp_fields = [timestamp_field]
+        if created_timestamp_column:
+            timestamp_fields.append(created_timestamp_column)
         field_string = ", ".join(
-            join_key_columns + feature_name_columns + [timestamp_field]
+            BigQueryOfflineStore._escape_query_columns(join_key_columns)
+            + BigQueryOfflineStore._escape_query_columns(feature_name_columns)
+            + timestamp_fields
+        )
+        timestamp_filter = get_timestamp_filter_sql(
+            start_date,
+            end_date,
+            timestamp_field,
+            quote_fields=False,
+            cast_style="timestamp_func",
         )
         query = f"""
             SELECT {field_string}
             FROM {from_expression}
-            WHERE {timestamp_field} BETWEEN TIMESTAMP('{start_date}') AND TIMESTAMP('{end_date}')
+            WHERE {timestamp_filter}
         """
         return BigQueryRetrievalJob(
             query=query,
@@ -233,6 +263,7 @@ class BigQueryOfflineStore(OfflineStore):
             dataset_project,
             config.offline_store.dataset,
             config.offline_store.location,
+            config.offline_store.table_create_disposition,
         )
 
         entity_schema = _get_entity_schema(
@@ -418,6 +449,10 @@ class BigQueryOfflineStore(OfflineStore):
                 destination=feature_view.batch_source.table,
                 job_config=job_config,
             ).result()
+
+    @staticmethod
+    def _escape_query_columns(columns: List[str]) -> List[str]:
+        return [f"`{x}`" for x in columns]
 
 
 class BigQueryRetrievalJob(RetrievalJob):
@@ -669,6 +704,7 @@ def _get_table_reference_for_new_entity(
     dataset_project: str,
     dataset_name: str,
     dataset_location: Optional[str],
+    table_create_disposition: str,
 ) -> str:
     """Gets the table_id for the new entity to be uploaded."""
 
@@ -678,8 +714,13 @@ def _get_table_reference_for_new_entity(
 
     try:
         client.get_dataset(dataset.reference)
-    except NotFound:
+    except NotFound as nfe:
         # Only create the dataset if it does not exist
+        if table_create_disposition == "CREATE_NEVER":
+            raise ValueError(
+                f"Dataset {dataset_project}.{dataset_name} does not exist "
+                f"and table_create_disposition is set to {table_create_disposition}."
+            ) from nfe
         client.create_dataset(dataset, exists_ok=True)
 
     table_name = offline_utils.get_temp_entity_table_name()
@@ -709,7 +750,7 @@ def _upload_entity_df(
 
     # Ensure that the table expires after some time
     table = client.get_table(table=table_name)
-    table.expires = datetime.utcnow() + timedelta(minutes=30)
+    table.expires = _utc_now() + timedelta(minutes=30)
     client.update_table(table, ["expires"])
 
     return table
@@ -802,10 +843,10 @@ def arrow_schema_to_bq_schema(arrow_schema: pyarrow.Schema) -> List[SchemaField]
     for field in arrow_schema:
         if pyarrow.types.is_list(field.type):
             detected_mode = "REPEATED"
-            detected_type = ARROW_SCALAR_IDS_TO_BQ[field.type.value_type.id]
+            detected_type = _ARROW_SCALAR_IDS_TO_BQ[field.type.value_type.id]
         else:
             detected_mode = "NULLABLE"
-            detected_type = ARROW_SCALAR_IDS_TO_BQ[field.type.id]
+            detected_type = _ARROW_SCALAR_IDS_TO_BQ[field.type.id]
 
         bq_schema.append(
             SchemaField(name=field.name, field_type=detected_type, mode=detected_mode)
@@ -881,7 +922,10 @@ CREATE TEMP TABLE {{ featureview.name }}__cleaned AS (
             {{ featureview.created_timestamp_column ~ ' as created_timestamp,' if featureview.created_timestamp_column else '' }}
             {{ featureview.entity_selections | join(', ')}}{% if featureview.entity_selections %},{% else %}{% endif %}
             {% for feature in featureview.features %}
-                {{ feature }} as {% if full_feature_names %}{{ featureview.name }}__{{featureview.field_mapping.get(feature, feature)}}{% else %}{{ featureview.field_mapping.get(feature, feature) }}{% endif %}{% if loop.last %}{% else %}, {% endif %}
+                {{ feature | backticks }} as {% if full_feature_names %}
+                {{ featureview.name }}__{{featureview.field_mapping.get(feature, feature)}}{% else %}
+                {{ featureview.field_mapping.get(feature, feature) | backticks }}{% endif %}
+                {% if loop.last %}{% else %}, {% endif %}
             {% endfor %}
         FROM {{ featureview.table_subquery }}
         WHERE {{ featureview.timestamp_field }} <= '{{ featureview.max_event_timestamp }}'
@@ -975,14 +1019,14 @@ CREATE TEMP TABLE {{ featureview.name }}__cleaned AS (
  The entity_dataframe dataset being our source of truth here.
  */
 
-SELECT {{ final_output_feature_names | join(', ')}}
+SELECT {{ final_output_feature_names | backticks | join(', ')}}
 FROM entity_dataframe
 {% for featureview in featureviews %}
 LEFT JOIN (
     SELECT
         {{featureview.name}}__entity_row_unique_id
         {% for feature in featureview.features %}
-            ,{% if full_feature_names %}{{ featureview.name }}__{{featureview.field_mapping.get(feature, feature)}}{% else %}{{ featureview.field_mapping.get(feature, feature) }}{% endif %}
+            ,{% if full_feature_names %}{{ featureview.name }}__{{featureview.field_mapping.get(feature, feature)}}{% else %}{{ featureview.field_mapping.get(feature, feature) | backticks }}{% endif %}
         {% endfor %}
     FROM {{ featureview.name }}__cleaned
 ) USING ({{featureview.name}}__entity_row_unique_id)

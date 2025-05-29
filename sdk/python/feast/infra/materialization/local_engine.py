@@ -7,9 +7,15 @@ from tqdm import tqdm
 from feast.batch_feature_view import BatchFeatureView
 from feast.entity import Entity
 from feast.feature_view import FeatureView
+from feast.infra.common.materialization_job import (
+    MaterializationJob,
+    MaterializationJobStatus,
+    MaterializationTask,
+)
 from feast.infra.offline_stores.offline_store import OfflineStore
 from feast.infra.online_stores.online_store import OnlineStore
 from feast.infra.registry.base_registry import BaseRegistry
+from feast.on_demand_feature_view import OnDemandFeatureView
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.stream_feature_view import StreamFeatureView
 from feast.utils import (
@@ -20,9 +26,6 @@ from feast.utils import (
 
 from .batch_materialization_engine import (
     BatchMaterializationEngine,
-    MaterializationJob,
-    MaterializationJobStatus,
-    MaterializationTask,
 )
 
 DEFAULT_BATCH_SIZE = 10_000
@@ -69,10 +72,10 @@ class LocalMaterializationEngine(BatchMaterializationEngine):
         self,
         project: str,
         views_to_delete: Sequence[
-            Union[BatchFeatureView, StreamFeatureView, FeatureView]
+            Union[BatchFeatureView, StreamFeatureView, FeatureView, OnDemandFeatureView]
         ],
         views_to_keep: Sequence[
-            Union[BatchFeatureView, StreamFeatureView, FeatureView]
+            Union[BatchFeatureView, StreamFeatureView, FeatureView, OnDemandFeatureView]
         ],
         entities_to_delete: Sequence[Entity],
         entities_to_keep: Sequence[Entity],

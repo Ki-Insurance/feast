@@ -48,6 +48,11 @@ DUMMY_ENTITY_VAL = ""
 DUMMY_ENTITY = Entity(
     name=DUMMY_ENTITY_NAME,
     join_keys=[DUMMY_ENTITY_ID],
+    value_type=ValueType.UNKNOWN,
+)
+DUMMY_ENTITY_FIELD = Field(
+    name=DUMMY_ENTITY_ID,
+    dtype=from_value_type(ValueType.STRING),
 )
 
 
@@ -88,6 +93,7 @@ class FeatureView(BaseFeatureView):
     entity_columns: List[Field]
     features: List[Field]
     online: bool
+    offline: bool
     description: str
     tags: Dict[str, str]
     owner: str
@@ -102,6 +108,7 @@ class FeatureView(BaseFeatureView):
         entities: Optional[List[Entity]] = None,
         ttl: Optional[timedelta] = timedelta(days=0),
         online: bool = True,
+        offline: bool = False,
         description: str = "",
         tags: Optional[Dict[str, str]] = None,
         owner: str = "",
@@ -121,6 +128,8 @@ class FeatureView(BaseFeatureView):
                 this group of features lives forever. Note that large ttl's or a ttl of 0
                 can result in extremely computationally intensive queries.
             online (optional): A boolean indicating whether online retrieval is enabled for
+                this feature view.
+            offline (optional): A boolean indicating whether write to offline store is enabled for
                 this feature view.
             description (optional): A human-readable description.
             tags (optional): A dictionary of key-value pairs to store arbitrary metadata.
@@ -187,6 +196,10 @@ class FeatureView(BaseFeatureView):
             else:
                 features.append(field)
 
+        assert len([f for f in features if f.vector_index]) < 2, (
+            f"Only one vector feature is allowed per feature view. Please update {self.name}."
+        )
+
         # TODO(felixwang9817): Add more robust validation of features.
         cols = [field.name for field in schema]
         for col in cols:
@@ -206,8 +219,10 @@ class FeatureView(BaseFeatureView):
             description=description,
             tags=tags,
             owner=owner,
+            source=source,
         )
         self.online = online
+        self.offline = offline
         self.materialization_intervals = []
 
     def __hash__(self):
@@ -221,6 +236,7 @@ class FeatureView(BaseFeatureView):
             schema=self.schema,
             tags=self.tags,
             online=self.online,
+            offline=self.offline,
         )
 
         # This is deliberately set outside of the FV initialization as we do not have the Entity objects.
@@ -243,6 +259,7 @@ class FeatureView(BaseFeatureView):
             sorted(self.entities) != sorted(other.entities)
             or self.ttl != other.ttl
             or self.online != other.online
+            or self.offline != other.offline
             or self.batch_source != other.batch_source
             or self.stream_source != other.stream_source
             or sorted(self.entity_columns) != sorted(other.entity_columns)
@@ -311,6 +328,16 @@ class FeatureView(BaseFeatureView):
 
         return cp
 
+    def update_materialization_intervals(
+        self, existing_materialization_intervals: List[Tuple[datetime, datetime]]
+    ):
+        if (
+            len(existing_materialization_intervals) > 0
+            and len(self.materialization_intervals) == 0
+        ):
+            for interval in existing_materialization_intervals:
+                self.materialization_intervals.append((interval[0], interval[1]))
+
     def to_proto(self) -> FeatureViewProto:
         """
         Converts a feature view object to its protobuf representation.
@@ -328,17 +355,17 @@ class FeatureView(BaseFeatureView):
         if self.stream_source:
             stream_source_proto = self.stream_source.to_proto()
             stream_source_proto.data_source_class_type = f"{self.stream_source.__class__.__module__}.{self.stream_source.__class__.__name__}"
-
         spec = FeatureViewSpecProto(
             name=self.name,
             entities=self.entities,
             entity_columns=[field.to_proto() for field in self.entity_columns],
-            features=[field.to_proto() for field in self.features],
+            features=[feature.to_proto() for feature in self.features],
             description=self.description,
             tags=self.tags,
             owner=self.owner,
             ttl=(ttl_duration if ttl_duration is not None else None),
             online=self.online,
+            offline=self.offline,
             batch_source=batch_source_proto,
             stream_source=stream_source_proto,
         )
@@ -388,6 +415,7 @@ class FeatureView(BaseFeatureView):
             tags=dict(feature_view_proto.spec.tags),
             owner=feature_view_proto.spec.owner,
             online=feature_view_proto.spec.online,
+            offline=feature_view_proto.spec.offline,
             ttl=(
                 timedelta(days=0)
                 if feature_view_proto.spec.ttl.ToNanoseconds() == 0
@@ -413,13 +441,15 @@ class FeatureView(BaseFeatureView):
 
         if len(feature_view.entities) != len(feature_view.entity_columns):
             warnings.warn(
-                f"There are some mismatches in your feature view's registered entities. Please check if you have applied your entities correctly."
+                f"There are some mismatches in your feature view: {feature_view.name} registered entities. Please check if you have applied your entities correctly."
                 f"Entities: {feature_view.entities} vs Entity Columns: {feature_view.entity_columns}"
             )
 
         # FeatureViewProjections are not saved in the FeatureView proto.
         # Create the default projection.
-        feature_view.projection = FeatureViewProjection.from_definition(feature_view)
+        feature_view.projection = FeatureViewProjection.from_feature_view_definition(
+            feature_view
+        )
 
         if feature_view_proto.meta.HasField("created_timestamp"):
             feature_view.created_timestamp = (
