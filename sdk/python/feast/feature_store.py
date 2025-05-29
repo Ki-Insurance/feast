@@ -2080,7 +2080,7 @@ class FeatureStore:
             distance_metric,
             query_string,
         )
-    
+
     async def _read_from_online_store_async_v2(
         self,
         entity_rows: Iterable[Mapping[str, Value]],

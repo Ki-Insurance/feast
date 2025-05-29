@@ -633,7 +633,7 @@ def _augment_response_with_on_demand_transforms(
             feature_dtypes = {f"{odfv.name}__{f.name}": f.dtype for f in odfv.features}
 
             proto_values = []
-            schema_dict = {k.name: k.dtype for k in odfv.schema}
+            # schema_dict = {k.name: k.dtype for k in odfv.schema}
             for selected_feature in selected_subset:
                 feature_vector = transformed_features[selected_feature]
                 selected_feature_type = feature_dtypes[selected_feature]

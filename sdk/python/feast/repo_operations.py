@@ -114,7 +114,7 @@ def get_repo_files(repo_root: Path) -> List[Path]:
 
 def _data_sources_equal(ds1: DataSource, ds2: DataSource) -> bool:
     """
-    Compare two (different) DataSource objects. This is a simplified version of the 
+    Compare two (different) DataSource objects. This is a simplified version of the
     original comparison logic, focusing on parent equality across common attributes and
     subclass identity.
     """

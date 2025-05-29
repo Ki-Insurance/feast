@@ -103,7 +103,7 @@ class BigtableOnlineStore(OnlineStore):
             row.row_key: row for row in rows
         }
         return [self._process_bt_row(bt_rows_dict.get(row_key)) for row_key in row_keys]
-    
+
     async def online_read_async(
         self,
         config: RepoConfig,
