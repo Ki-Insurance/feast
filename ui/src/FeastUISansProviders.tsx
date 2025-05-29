@@ -1,10 +1,10 @@
 import React from "react";
 
-import "@elastic/eui/dist/eui_theme_light.css";
 import "./index.css";
 
 import { Routes, Route } from "react-router-dom";
 import { EuiProvider, EuiErrorBoundary } from "@elastic/eui";
+import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 
 import ProjectOverviewPage from "./pages/ProjectOverviewPage";
 import Layout from "./pages/Layout";
@@ -13,6 +13,7 @@ import DatasourceIndex from "./pages/data-sources/Index";
 import DatasetIndex from "./pages/saved-data-sets/Index";
 import EntityIndex from "./pages/entities/Index";
 import EntityInstance from "./pages/entities/EntityInstance";
+import FeatureListPage from "./pages/features/FeatureListPage";
 import FeatureInstance from "./pages/features/FeatureInstance";
 import FeatureServiceIndex from "./pages/feature-services/Index";
 import FeatureViewIndex from "./pages/feature-views/Index";
@@ -21,6 +22,8 @@ import FeatureServiceInstance from "./pages/feature-services/FeatureServiceInsta
 import DataSourceInstance from "./pages/data-sources/DataSourceInstance";
 import RootProjectSelectionPage from "./pages/RootProjectSelectionPage";
 import DatasetInstance from "./pages/saved-data-sets/DatasetInstance";
+import PermissionsIndex from "./pages/permissions/Index";
+import LineageIndex from "./pages/lineage/Index";
 import NoProjectGuard from "./components/NoProjectGuard";
 
 import TabsRegistryContext, {
@@ -40,8 +43,8 @@ interface FeastUIConfigs {
   projectListPromise?: Promise<any>;
 }
 
-const defaultProjectListPromise = () => {
-  return fetch("/projects-list.json", {
+const defaultProjectListPromise = (basename: string) => {
+  return fetch(`${basename}/projects-list.json`, {
     headers: {
       "Content-Type": "application/json",
     },
@@ -51,8 +54,10 @@ const defaultProjectListPromise = () => {
 };
 
 const FeastUISansProviders = ({
+  basename = "",
   feastUIConfigs,
 }: {
+  basename?: string;
   feastUIConfigs?: FeastUIConfigs;
 }) => {
   const projectListContext: ProjectsListContextInterface =
@@ -61,12 +66,35 @@ const FeastUISansProviders = ({
           projectsListPromise: feastUIConfigs?.projectListPromise,
           isCustom: true,
         }
-      : { projectsListPromise: defaultProjectListPromise(), isCustom: false };
-    
-  const BASE_URL = process.env.PUBLIC_URL || ""
+      : {
+          projectsListPromise: defaultProjectListPromise(basename),
+          isCustom: false,
+        };
 
   return (
-    <EuiProvider colorMode="light">
+    <ThemeProvider>
+      <FeastUISansProvidersInner
+        basename={basename}
+        projectListContext={projectListContext}
+        feastUIConfigs={feastUIConfigs}
+      />
+    </ThemeProvider>
+  );
+};
+
+const FeastUISansProvidersInner = ({
+  basename,
+  projectListContext,
+  feastUIConfigs,
+}: {
+  basename: string;
+  projectListContext: ProjectsListContextInterface;
+  feastUIConfigs?: FeastUIConfigs;
+}) => {
+  const { colorMode } = useTheme();
+
+  return (
+    <EuiProvider colorMode={colorMode}>
       <EuiErrorBoundary>
         <TabsRegistryContext.Provider
           value={feastUIConfigs?.tabsRegistry || {}}
@@ -76,25 +104,28 @@ const FeastUISansProviders = ({
           >
             <ProjectListContext.Provider value={projectListContext}>
               <Routes>
-                <Route path={BASE_URL + "/"} element={<Layout />}>
+                <Route path="/" element={<Layout />}>
                   <Route index element={<RootProjectSelectionPage />} />
-                  <Route path={BASE_URL + "/p/:projectName/*"} element={<NoProjectGuard />}>
+                  <Route path="/p/:projectName/*" element={<NoProjectGuard />}>
                     <Route index element={<ProjectOverviewPage />} />
                     <Route path="data-source/" element={<DatasourceIndex />} />
                     <Route
                       path="data-source/:dataSourceName/*"
                       element={<DataSourceInstance />}
                     />
+                    <Route path="features/" element={<FeatureListPage />} />
                     <Route
                       path="feature-view/"
                       element={<FeatureViewIndex />}
                     />
-                    <Route path="feature-view/:featureViewName/*" element={<FeatureViewInstance />}>
-                    </Route>
                     <Route
-                        path="feature-view/:FeatureViewName/feature/:FeatureName/*"
-                        element={<FeatureInstance />}
-                      />
+                      path="feature-view/:featureViewName/*"
+                      element={<FeatureViewInstance />}
+                    ></Route>
+                    <Route
+                      path="feature-view/:FeatureViewName/feature/:FeatureName/*"
+                      element={<FeatureInstance />}
+                    />
                     <Route
                       path="feature-service/"
                       element={<FeatureServiceIndex />}
@@ -114,6 +145,8 @@ const FeastUISansProviders = ({
                       path="data-set/:datasetName/*"
                       element={<DatasetInstance />}
                     />
+                    <Route path="permissions/" element={<PermissionsIndex />} />
+                    <Route path="lineage/" element={<LineageIndex />} />
                   </Route>
                 </Route>
                 <Route path="*" element={<NoMatch />} />

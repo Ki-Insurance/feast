@@ -12,6 +12,7 @@ Subpackages
    feast.embedded_go
    feast.infra
    feast.loaders
+   feast.permissions
    feast.protos
    feast.transformation
    feast.ui
@@ -23,6 +24,14 @@ feast.aggregation module
 ------------------------
 
 .. automodule:: feast.aggregation
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+feast.arrow\_error\_handler module
+----------------------------------
+
+.. automodule:: feast.arrow_error_handler
    :members:
    :undoc-members:
    :show-inheritance:
@@ -47,6 +56,14 @@ feast.cli module
 ----------------
 
 .. automodule:: feast.cli
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+feast.cli\_utils module
+-----------------------
+
+.. automodule:: feast.cli_utils
    :members:
    :undoc-members:
    :show-inheritance:
@@ -187,6 +204,14 @@ feast.flags\_helper module
    :undoc-members:
    :show-inheritance:
 
+feast.grpc\_error\_interceptor module
+-------------------------------------
+
+.. automodule:: feast.grpc_error_interceptor
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 feast.importer module
 ---------------------
 
@@ -231,6 +256,14 @@ feast.online\_response module
 -----------------------------
 
 .. automodule:: feast.online_response
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+feast.project module
+--------------------
+
+.. automodule:: feast.project
    :members:
    :undoc-members:
    :show-inheritance:
@@ -283,10 +316,26 @@ feast.repo\_operations module
    :undoc-members:
    :show-inheritance:
 
+feast.rest\_error\_handler module
+---------------------------------
+
+.. automodule:: feast.rest_error_handler
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 feast.saved\_dataset module
 ---------------------------
 
 .. automodule:: feast.saved_dataset
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+feast.ssl\_ca\_trust\_store\_setup module
+-----------------------------------------
+
+.. automodule:: feast.ssl_ca_trust_store_setup
    :members:
    :undoc-members:
    :show-inheritance:

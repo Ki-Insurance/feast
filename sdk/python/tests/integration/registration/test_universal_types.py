@@ -20,6 +20,7 @@ from feast.types import (
     String,
     UnixTimestamp,
 )
+from feast.utils import _utc_now
 from tests.data.data_creator import create_basic_driver_dataset
 from tests.integration.feature_repos.universal.entities import driver
 from tests.integration.feature_repos.universal.feature_views import driver_feature_view
@@ -93,7 +94,7 @@ def test_feature_get_historical_features_types_match(
 
     entity_df = pd.DataFrame()
     entity_df["driver_id"] = [1, 3]
-    ts = pd.Timestamp(datetime.utcnow()).round("ms")
+    ts = pd.Timestamp(_utc_now()).round("ms")
     entity_df["ts"] = [
         ts - timedelta(hours=4),
         ts - timedelta(hours=2),
@@ -170,9 +171,9 @@ def test_feature_get_online_features_types_match(
     if config.feature_is_list:
         for feature in online_features["value"]:
             assert isinstance(feature, list), "Feature value should be a list"
-            assert (
-                config.has_empty_list or len(feature) > 0
-            ), "List of values should not be empty"
+            assert config.has_empty_list or len(feature) > 0, (
+                "List of values should not be empty"
+            )
             for element in feature:
                 assert isinstance(element, expected_dtype)
     else:
@@ -223,7 +224,9 @@ def assert_expected_historical_feature_types(
     dtype_checkers = feature_dtype_to_expected_historical_feature_dtype[feature_dtype]
     assert any(
         check(historical_features_df.dtypes["value"]) for check in dtype_checkers
-    ), f"Failed to match feature type {historical_features_df.dtypes['value']} with checkers {dtype_checkers}"
+    ), (
+        f"Failed to match feature type {historical_features_df.dtypes['value']} with checkers {dtype_checkers}"
+    )
 
 
 def assert_feature_list_types(
@@ -337,6 +340,14 @@ def offline_types_test_fixtures(request, environment):
     config: TypeTestConfig = request.param
     if environment.provider == "aws" and config.feature_is_list is True:
         pytest.skip("Redshift doesn't support list features")
+    if (
+        environment.data_source_creator.__class__.__name__
+        == "ClickhouseDataSourceCreator"
+        and config.feature_dtype in {"float", "datetime", "bool"}
+        and config.feature_is_list
+        and not config.has_empty_list
+    ):
+        pytest.skip("Clickhouse doesn't support Nullable(Array) type features")
 
     return get_fixtures(request, environment)
 

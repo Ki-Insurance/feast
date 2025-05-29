@@ -2,8 +2,9 @@ import os
 import tempfile
 import uuid
 import warnings
-from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import pandas
@@ -14,7 +15,6 @@ import pyspark
 from pydantic import StrictStr
 from pyspark import SparkConf
 from pyspark.sql import SparkSession
-from pytz import utc
 
 from feast import FeatureView, OnDemandFeatureView
 from feast.data_source import DataSource
@@ -30,11 +30,12 @@ from feast.infra.offline_stores.offline_store import (
     RetrievalJob,
     RetrievalMetadata,
 )
+from feast.infra.offline_stores.offline_utils import get_timestamp_filter_sql
 from feast.infra.registry.base_registry import BaseRegistry
-from feast.infra.utils import aws_utils
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
 from feast.saved_dataset import SavedDatasetStorage
 from feast.type_map import spark_schema_to_np_dtypes
+from feast.utils import _get_fields_with_aliases
 
 # Make sure spark warning doesn't raise more than once.
 warnings.simplefilter("once", RuntimeWarning)
@@ -53,6 +54,12 @@ class SparkOfflineStoreConfig(FeastConfigBaseModel):
 
     region: Optional[StrictStr] = None
     """ AWS Region if applicable for s3-based staging locations"""
+
+
+@dataclass(frozen=True)
+class SparkFeatureViewQueryContext(offline_utils.FeatureViewQueryContext):
+    min_date_partition: Optional[str]
+    max_date_partition: str
 
 
 class SparkOfflineStore(OfflineStore):
@@ -92,19 +99,28 @@ class SparkOfflineStore(OfflineStore):
         if created_timestamp_column:
             timestamps.append(created_timestamp_column)
         timestamp_desc_string = " DESC, ".join(timestamps) + " DESC"
-        field_string = ", ".join(join_key_columns + feature_name_columns + timestamps)
+        (fields_with_aliases, aliases) = _get_fields_with_aliases(
+            fields=join_key_columns + feature_name_columns + timestamps,
+            field_mappings=data_source.field_mapping,
+        )
+
+        fields_as_string = ", ".join(fields_with_aliases)
+        aliases_as_string = ", ".join(aliases)
+
+        date_partition_column = data_source.date_partition_column
+        date_partition_column_format = data_source.date_partition_column_format
 
         start_date_str = _format_datetime(start_date)
         end_date_str = _format_datetime(end_date)
         query = f"""
                 SELECT
-                    {field_string}
+                    {aliases_as_string}
                     {f", {repr(DUMMY_ENTITY_VAL)} AS {DUMMY_ENTITY_ID}" if not join_key_columns else ""}
                 FROM (
-                    SELECT {field_string},
+                    SELECT {fields_as_string},
                     ROW_NUMBER() OVER({partition_by_join_key_string} ORDER BY {timestamp_desc_string}) AS feast_row_
                     FROM {from_expression} t1
-                    WHERE {timestamp_field} BETWEEN TIMESTAMP('{start_date_str}') AND TIMESTAMP('{end_date_str}')
+                    WHERE {timestamp_field} BETWEEN TIMESTAMP('{start_date_str}') AND TIMESTAMP('{end_date_str}'){" AND " + date_partition_column + " >= '" + start_date.strftime(date_partition_column_format) + "' AND " + date_partition_column + " <= '" + end_date.strftime(date_partition_column_format) + "' " if date_partition_column != "" and date_partition_column is not None else ""}
                 ) t2
                 WHERE feast_row_ = 1
                 """
@@ -128,8 +144,12 @@ class SparkOfflineStore(OfflineStore):
         full_feature_names: bool = False,
     ) -> RetrievalJob:
         assert isinstance(config.offline_store, SparkOfflineStoreConfig)
+        date_partition_column_formats = []
         for fv in feature_views:
             assert isinstance(fv.batch_source, SparkSource)
+            date_partition_column_formats.append(
+                fv.batch_source.date_partition_column_format
+            )
 
         warnings.warn(
             "The spark offline store is an experimental feature in alpha development. "
@@ -178,8 +198,27 @@ class SparkOfflineStore(OfflineStore):
             entity_df_event_timestamp_range,
         )
 
+        spark_query_context = [
+            SparkFeatureViewQueryContext(
+                **asdict(context),
+                min_date_partition=datetime.fromisoformat(
+                    context.min_event_timestamp
+                ).strftime(date_format)
+                if context.min_event_timestamp is not None
+                else None,
+                max_date_partition=datetime.fromisoformat(
+                    context.max_event_timestamp
+                ).strftime(date_format),
+            )
+            for date_format, context in zip(
+                date_partition_column_formats, query_context
+            )
+        ]
+
         query = offline_utils.build_point_in_time_query(
-            feature_view_query_contexts=query_context,
+            feature_view_query_contexts=cast(
+                List[offline_utils.FeatureViewQueryContext], spark_query_context
+            ),
             left_table_query_string=tmp_entity_df_table_name,
             entity_df_event_timestamp_col=event_timestamp_col,
             entity_df_columns=entity_schema.keys(),
@@ -262,8 +301,9 @@ class SparkOfflineStore(OfflineStore):
         join_key_columns: List[str],
         feature_name_columns: List[str],
         timestamp_field: str,
-        start_date: datetime,
-        end_date: datetime,
+        created_timestamp_column: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
     ) -> RetrievalJob:
         """
         Note that join_key_columns, feature_name_columns, timestamp_field, and
@@ -282,15 +322,25 @@ class SparkOfflineStore(OfflineStore):
             store_config=config.offline_store
         )
 
-        fields = ", ".join(join_key_columns + feature_name_columns + [timestamp_field])
+        timestamp_fields = [timestamp_field]
+        if created_timestamp_column:
+            timestamp_fields.append(created_timestamp_column)
+        (fields_with_aliases, aliases) = _get_fields_with_aliases(
+            fields=join_key_columns + feature_name_columns + timestamp_fields,
+            field_mappings=data_source.field_mapping,
+        )
+
+        fields_with_alias_string = ", ".join(fields_with_aliases)
+
         from_expression = data_source.get_table_query_string()
-        start_date = start_date.astimezone(tz=utc)
-        end_date = end_date.astimezone(tz=utc)
+        timestamp_filter = get_timestamp_filter_sql(
+            start_date, end_date, timestamp_field, tz=timezone.utc, quote_fields=False
+        )
 
         query = f"""
-            SELECT {fields}
+            SELECT {fields_with_alias_string}
             FROM {from_expression}
-            WHERE {timestamp_field} BETWEEN TIMESTAMP '{start_date}' AND TIMESTAMP '{end_date}'
+            WHERE {timestamp_filter}
         """
 
         return SparkRetrievalJob(
@@ -400,6 +450,8 @@ class SparkRetrievalJob(RetrievalJob):
 
                 return _list_files_in_folder(output_uri)
             elif self._config.offline_store.staging_location.startswith("s3://"):
+                from feast.infra.utils import aws_utils
+
                 spark_compatible_s3_staging_location = (
                     self._config.offline_store.staging_location.replace(
                         "s3://", "s3a://"
@@ -520,13 +572,10 @@ def _upload_entity_df(
             entity_df[event_timestamp_col], utc=True
         )
         spark_session.createDataFrame(entity_df).createOrReplaceTempView(table_name)
-        return
     elif isinstance(entity_df, str):
         spark_session.sql(entity_df).createOrReplaceTempView(table_name)
-        return
     elif isinstance(entity_df, pyspark.sql.DataFrame):
         entity_df.createOrReplaceTempView(table_name)
-        return
     else:
         raise InvalidEntityType(type(entity_df))
 
@@ -534,7 +583,7 @@ def _upload_entity_df(
 def _format_datetime(t: datetime) -> str:
     # Since Hive does not support timezone, need to transform to utc.
     if t.tzinfo:
-        t = t.astimezone(tz=utc)
+        t = t.astimezone(tz=timezone.utc)
     dt = t.strftime("%Y-%m-%d %H:%M:%S.%f")
     return dt
 
@@ -632,8 +681,15 @@ CREATE OR REPLACE TEMPORARY VIEW {{ featureview.name }}__cleaned AS (
             {% endfor %}
         FROM {{ featureview.table_subquery }}
         WHERE {{ featureview.timestamp_field }} <= '{{ featureview.max_event_timestamp }}'
+        {% if featureview.date_partition_column != "" and featureview.date_partition_column is not none %}
+        AND {{ featureview.date_partition_column }} <= '{{ featureview.max_date_partition }}'
+        {% endif %}
+
         {% if featureview.ttl == 0 %}{% else %}
         AND {{ featureview.timestamp_field }} >= '{{ featureview.min_event_timestamp }}'
+        {% if featureview.date_partition_column != "" and featureview.date_partition_column is not none %}
+          AND {{ featureview.date_partition_column }} >= '{{ featureview.min_date_partition }}'
+        {% endif %}
         {% endif %}
     ),
 

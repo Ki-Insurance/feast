@@ -30,7 +30,10 @@ class SnowflakeOnlineStoreConfig(FeastConfigBaseModel):
     """ Online store type selector """
 
     config_path: Optional[str] = os.path.expanduser("~/.snowsql/config")
-    """ Snowflake config path -- absolute path required (Can't use ~)"""
+    """ Snowflake snowsql config path -- absolute path required (Cant use ~)"""
+
+    connection_name: Optional[str] = None
+    """ Snowflake connector connection name -- typically defined in ~/.snowflake/connections.toml """
 
     account: Optional[str] = None
     """ Snowflake deployment identifier -- drop .snowflakecomputing.com """
@@ -52,6 +55,9 @@ class SnowflakeOnlineStoreConfig(FeastConfigBaseModel):
 
     private_key: Optional[str] = None
     """ Snowflake private key file path"""
+
+    private_key_content: Optional[bytes] = None
+    """ Snowflake private key stored as bytes"""
 
     private_key_passphrase: Optional[str] = None
     """ Snowflake private key file passphrase"""

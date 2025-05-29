@@ -4,6 +4,10 @@
 [overview.md](overview.md)
 {% endcontent-ref %}
 
+{% content-ref url="project.md" %}
+[project.md](project.md)
+{% endcontent-ref %}
+
 {% content-ref url="data-ingestion.md" %}
 [data-ingestion.md](data-ingestion.md)
 {% endcontent-ref %}
@@ -24,10 +28,14 @@
 [point-in-time-joins.md](point-in-time-joins.md)
 {% endcontent-ref %}
 
-{% content-ref url="registry.md" %}
-[registry.md](registry.md)
-{% endcontent-ref %}
-
 {% content-ref url="dataset.md" %}
 [dataset.md](dataset.md)
+{% endcontent-ref %}
+
+{% content-ref url="permission.md" %}
+[permission.md](permission.md)
+{% endcontent-ref %}
+
+{% content-ref url="tags.md" %}
+[tags.md](tags.md)
 {% endcontent-ref %}

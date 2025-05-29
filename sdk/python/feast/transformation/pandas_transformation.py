@@ -1,5 +1,6 @@
+import inspect
 from types import FunctionType
-from typing import Any, Callable, Union
+from typing import Any, Callable, Optional, cast, get_type_hints, Union
 
 import dill
 import pandas as pd
@@ -9,23 +10,61 @@ from feast.field import Field, from_value_type
 from feast.protos.feast.core.Transformation_pb2 import (
     UserDefinedFunctionV2 as UserDefinedFunctionProto,
 )
+from feast.transformation.base import Transformation
+from feast.transformation.mode import TransformationMode
 from feast.type_map import (
     python_type_to_feast_value_type,
 )
 
 
-class PandasTransformation:
-    def __init__(self, udf: Union[FunctionType, Callable], udf_string: str = ""):
-        """
-        Creates an PandasTransformation object.
+class PandasTransformation(Transformation):
+    def __new__(
+        cls,
+        udf: Union[FunctionType, Callable],
+        udf_string: str,
+        name: Optional[str] = None,
+        tags: Optional[dict[str, str]] = None,
+        description: str = "",
+        owner: str = "",
+    ) -> "PandasTransformation":
+        instance = super(PandasTransformation, cls).__new__(
+            cls,
+            mode=TransformationMode.PANDAS,
+            udf=udf,
+            name=name,
+            udf_string=udf_string,
+            tags=tags,
+            description=description,
+            owner=owner,
+        )
+        return cast(PandasTransformation, instance)
 
-        Args:
-            udf: The user defined transformation function, which must take pandas
-                dataframes as inputs.
-            udf_string: The source code version of the udf (for diffing and displaying in Web UI)
-        """
-        self.udf: Union[FunctionType, Callable] = udf
-        self.udf_string = udf_string
+    def __init__(
+        self,
+        udf: Callable[[Any], Any],
+        udf_string: str,
+        name: Optional[str] = None,
+        tags: Optional[dict[str, str]] = None,
+        description: str = "",
+        owner: str = "",
+        *args,
+        **kwargs,
+    ):
+        return_annotation = get_type_hints(udf).get("return", inspect._empty)
+        if return_annotation not in (inspect._empty, pd.DataFrame):
+            raise TypeError(
+                f"return signature for PandasTransformation should be pd.DataFrame, instead got {return_annotation}"
+            )
+
+        super().__init__(
+            mode=TransformationMode.PANDAS,
+            udf=udf,
+            name=name,
+            udf_string=udf_string,
+            tags=tags,
+            description=description,
+            owner=owner,
+        )
 
     def transform_arrow(
         self, pa_table: pyarrow.Table, features: list[Field]
@@ -33,22 +72,39 @@ class PandasTransformation:
         output_df_pandas = self.udf(pa_table.to_pandas())
         return pyarrow.Table.from_pandas(output_df_pandas)
 
-    def transform(self, input_df: pd.DataFrame) -> pd.DataFrame:
-        return self.udf(input_df)
+    def transform(self, inputs: pd.DataFrame) -> pd.DataFrame:
+        return self.udf(inputs)
 
-    def infer_features(self, random_input: dict[str, list[Any]]) -> list[Field]:
+    def infer_features(
+        self,
+        random_input: dict[str, list[Any]],
+        *args,
+        **kwargs,
+    ) -> list[Field]:
         df = pd.DataFrame.from_dict(random_input)
         output_df: pd.DataFrame = self.transform(df)
 
-        return [
-            Field(
-                name=f,
-                dtype=from_value_type(
-                    python_type_to_feast_value_type(f, type_name=str(dt))
-                ),
+        fields = []
+        for feature_name, feature_type in zip(output_df.columns, output_df.dtypes):
+            feature_value = output_df[feature_name].tolist()
+            if len(feature_value) <= 0:
+                raise TypeError(
+                    f"Failed to infer type for feature '{feature_name}' with value "
+                    + f"'{feature_value}' since no items were returned by the UDF."
+                )
+            fields.append(
+                Field(
+                    name=feature_name,
+                    dtype=from_value_type(
+                        python_type_to_feast_value_type(
+                            feature_name,
+                            value=feature_value[0],
+                            type_name=str(feature_type),
+                        )
+                    ),
+                )
             )
-            for f, dt in zip(output_df.columns, output_df.dtypes)
-        ]
+        return fields
 
     def __eq__(self, other):
         if not isinstance(other, PandasTransformation):
@@ -63,13 +119,6 @@ class PandasTransformation:
             return False
 
         return True
-
-    def to_proto(self) -> UserDefinedFunctionProto:
-        return UserDefinedFunctionProto(
-            name=self.udf.__name__,
-            body=dill.dumps(self.udf, recurse=True),
-            body_text=self.udf_string,
-        )
 
     @classmethod
     def from_proto(cls, user_defined_function_proto: UserDefinedFunctionProto):
