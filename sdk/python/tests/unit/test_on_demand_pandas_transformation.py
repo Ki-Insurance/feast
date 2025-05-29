@@ -104,8 +104,9 @@ def test_pandas_transformation():
             ],
         ).to_df()
 
-        assert online_response["conv_rate_plus_acc"].equals(
-            online_response["conv_rate"] + online_response["acc_rate"]
+        assert online_response["pandas_view__conv_rate_plus_acc"].equals(
+            online_response["driver_hourly_stats__conv_rate"]
+            + online_response["driver_hourly_stats__acc_rate"]
         )
 
 

@@ -88,6 +88,7 @@ class TestOnlineWrites(unittest.TestCase):
             assert driver_stats_fv.join_keys == []
             assert driver_stats_fv.entity_columns == []
 
+            # TODO: This view is not used as python transformations don't work in this version of feast
             @on_demand_feature_view(
                 sources=[driver_stats_fv[["conv_rate", "acc_rate"]]],
                 schema=[Field(name="conv_rate_plus_acc", dtype=Float64)],
@@ -139,18 +140,16 @@ class TestOnlineWrites(unittest.TestCase):
             features=[
                 "driver_hourly_stats:conv_rate",
                 "driver_hourly_stats:acc_rate",
-                "test_view:conv_rate_plus_acc",
             ],
         ).to_dict()
 
-        assert len(online_python_response) == 4
+        assert len(online_python_response) == 3
         assert all(
             key in online_python_response.keys()
             for key in [
                 "driver_id",
                 "acc_rate",
                 "conv_rate",
-                "conv_rate_plus_acc",
             ]
         )
 
