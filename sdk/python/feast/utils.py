@@ -630,11 +630,13 @@ def _augment_response_with_on_demand_transforms(
             )
             selected_subset = [f for f in transformed_columns if f in _feature_refs]
 
+            feature_dtypes = {f"{odfv.name}__{f.name}": f.dtype for f in odfv.features}
+
             proto_values = []
             schema_dict = {k.name: k.dtype for k in odfv.schema}
             for selected_feature in selected_subset:
                 feature_vector = transformed_features[selected_feature]
-                selected_feature_type = schema_dict.get(selected_feature, None)
+                selected_feature_type = feature_dtypes[selected_feature]
                 feature_type: ValueType = ValueType.UNKNOWN
                 if selected_feature_type is not None:
                     if isinstance(
