@@ -118,10 +118,7 @@ def _data_sources_equal(ds1: DataSource, ds2: DataSource) -> bool:
     original comparison logic, focusing on parent equality across common attributes and
     subclass identity.
     """
-    return (
-        type(ds1) == type(ds2)
-        and DataSource.__eq__(ds1, ds2)
-    )
+    return type(ds1) == type(ds2) and DataSource.__eq__(ds1, ds2)
 
 
 def parse_repo(repo_root: Path) -> RepoContents:
@@ -164,7 +161,8 @@ def parse_repo(repo_root: Path) -> RepoContents:
                     batch_source = obj.batch_source
 
                     if batch_source and not any(
-                        (_data_sources_equal(batch_source, ds)) for ds in res.data_sources
+                        (_data_sources_equal(batch_source, ds))
+                        for ds in res.data_sources
                     ):
                         res.data_sources.append(batch_source)
             if (
@@ -178,13 +176,18 @@ def parse_repo(repo_root: Path) -> RepoContents:
                 # Handle batch sources defined with feature views.
                 batch_source = obj.batch_source
                 assert batch_source
-                if not any((_data_sources_equal(batch_source, ds)) for ds in res.data_sources):
+                if not any(
+                    (_data_sources_equal(batch_source, ds)) for ds in res.data_sources
+                ):
                     res.data_sources.append(batch_source)
 
                 # Handle stream sources defined with feature views.
                 if obj.stream_source:
                     stream_source = obj.stream_source
-                    if not any((_data_sources_equal(stream_source, ds)) for ds in res.data_sources):
+                    if not any(
+                        (_data_sources_equal(stream_source, ds))
+                        for ds in res.data_sources
+                    ):
                         res.data_sources.append(stream_source)
             elif isinstance(obj, StreamFeatureView) and not any(
                 (obj is sfv) for sfv in res.stream_feature_views
@@ -193,7 +196,9 @@ def parse_repo(repo_root: Path) -> RepoContents:
 
                 # Handle batch sources defined with feature views.
                 batch_source = obj.batch_source
-                if not any((_data_sources_equal(batch_source, ds)) for ds in res.data_sources):
+                if not any(
+                    (_data_sources_equal(batch_source, ds)) for ds in res.data_sources
+                ):
                     res.data_sources.append(batch_source)
 
                 # Handle stream sources defined with feature views.
@@ -208,7 +213,9 @@ def parse_repo(repo_root: Path) -> RepoContents:
 
                 # Handle batch sources defined with feature views.
                 batch_source = obj.batch_source
-                if not any((_data_sources_equal(batch_source, ds)) for ds in res.data_sources):
+                if not any(
+                    (_data_sources_equal(batch_source, ds)) for ds in res.data_sources
+                ):
                     res.data_sources.append(batch_source)
             elif isinstance(obj, Entity) and not any(
                 (obj is entity) for entity in res.entities

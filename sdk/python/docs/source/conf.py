@@ -39,7 +39,9 @@ cwd = Path(os.getcwd())
 os.chdir(cwd.parent.parent.parent.parent)
 
 # Compile Python protos
-result = subprocess.run(["python", "setup.py", "build_python_protos", "--inplace"], capture_output=True)
+result = subprocess.run(
+    ["python", "setup.py", "build_python_protos", "--inplace"], capture_output=True
+)
 stdout = result.stdout.decode("utf-8")
 stderr = result.stderr.decode("utf-8")
 print(f"Apply stdout:\n{stdout}")
