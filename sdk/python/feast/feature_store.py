@@ -2080,6 +2080,25 @@ class FeatureStore:
             distance_metric,
             query_string,
         )
+    
+    async def _read_from_online_store_async_v2(
+        self,
+        entity_rows: Iterable[Mapping[str, Value]],
+        provider: Provider,
+        requested_features: List[str],
+        table: FeatureView,
+    ) -> List[Tuple[List[Timestamp], List["FieldStatus.ValueType"], List[Value]]]:
+        entity_key_protos = utils._get_entity_key_protos(entity_rows)
+
+        # Fetch data for Entities.
+        read_rows = await provider.online_read_async_v2(
+            config=self.config,
+            table=table,
+            entity_keys=entity_key_protos,
+            requested_features=requested_features,
+        )
+
+        return utils._convert_rows_to_protobuf(requested_features, read_rows)
 
     def _retrieve_from_online_store(
         self,

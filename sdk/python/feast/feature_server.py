@@ -198,6 +198,8 @@ def get_app(
         stop_refresh()
         await store.close()
 
+    async_refresh()
+
     app = FastAPI(lifespan=lifespan)
 
     @app.post(
