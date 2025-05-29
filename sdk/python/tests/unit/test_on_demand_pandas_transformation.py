@@ -93,7 +93,6 @@ def test_pandas_transformation():
         store.write_to_online_store(
             feature_view_name="driver_hourly_stats", df=driver_df
         )
-
         online_response = store.get_online_features(
             entity_rows=entity_rows,
             features=[
@@ -102,8 +101,8 @@ def test_pandas_transformation():
                 "driver_hourly_stats:avg_daily_trips",
                 "pandas_view:conv_rate_plus_acc",
             ],
+            full_feature_names=True,
         ).to_df()
-
         assert online_response["pandas_view__conv_rate_plus_acc"].equals(
             online_response["driver_hourly_stats__conv_rate"]
             + online_response["driver_hourly_stats__acc_rate"]

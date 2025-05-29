@@ -122,7 +122,7 @@ class FooProvider(Provider):
         requested_features: Optional[List[str]] = None,
     ) -> List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]]:
         return []
-    
+
     async def online_read_async_v2(
         self,
         config: RepoConfig,
