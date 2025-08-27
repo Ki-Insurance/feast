@@ -9,9 +9,6 @@ from feast.infra.offline_stores.contrib.athena_offline_store.athena import (
     AthenaOfflineStoreConfig,
     AthenaRetrievalJob,
 )
-from feast.infra.offline_stores.contrib.mssql_offline_store.mssql import (
-    MsSqlServerRetrievalJob,
-)
 from feast.infra.offline_stores.contrib.postgres_offline_store.postgres import (
     PostgreSQLOfflineStoreConfig,
     PostgreSQLRetrievalJob,
@@ -23,7 +20,8 @@ from feast.infra.offline_stores.contrib.spark_offline_store.spark import (
 from feast.infra.offline_stores.contrib.trino_offline_store.trino import (
     TrinoRetrievalJob,
 )
-from feast.infra.offline_stores.file import FileRetrievalJob
+from feast.infra.offline_stores.dask import DaskRetrievalJob
+from feast.infra.offline_stores.file_source import FileSource
 from feast.infra.offline_stores.offline_store import RetrievalJob, RetrievalMetadata
 from feast.infra.offline_stores.redshift import (
     RedshiftOfflineStoreConfig,
@@ -100,11 +98,10 @@ class MockRetrievalJob(RetrievalJob):
 @pytest.fixture(
     params=[
         MockRetrievalJob,
-        FileRetrievalJob,
+        DaskRetrievalJob,
         RedshiftRetrievalJob,
         SnowflakeRetrievalJob,
         AthenaRetrievalJob,
-        MsSqlServerRetrievalJob,
         PostgreSQLRetrievalJob,
         SparkRetrievalJob,
         TrinoRetrievalJob,
@@ -112,8 +109,8 @@ class MockRetrievalJob(RetrievalJob):
     ]
 )
 def retrieval_job(request, environment):
-    if request.param is FileRetrievalJob:
-        return FileRetrievalJob(lambda: 1, full_feature_names=False)
+    if request.param is DaskRetrievalJob:
+        return DaskRetrievalJob(lambda: 1, full_feature_names=False, repo_path="")
     elif request.param is RedshiftRetrievalJob:
         offline_store_config = RedshiftOfflineStoreConfig(
             cluster_id="feast-int-bucket",
@@ -124,7 +121,7 @@ def retrieval_job(request, environment):
             iam_role="arn:aws:iam::585132637328:role/service-role/AmazonRedshift-CommandsAccessRole-20240403T092631",
             workgroup="",
         )
-        config = environment.config.copy(
+        config = environment.config.model_copy(
             update={"offline_config": offline_store_config}
         )
         return RedshiftRetrievalJob(
@@ -147,7 +144,7 @@ def retrieval_job(request, environment):
             storage_integration_name="FEAST_S3",
             blob_export_location="s3://feast-snowflake-offload/export",
         )
-        config = environment.config.copy(
+        config = environment.config.model_copy(
             update={"offline_config": offline_store_config}
         )
         environment.project = "project"
@@ -170,13 +167,6 @@ def retrieval_job(request, environment):
             query="query",
             athena_client="client",
             s3_resource="",
-            config=environment.config,
-            full_feature_names=False,
-        )
-    elif request.param is MsSqlServerRetrievalJob:
-        return MsSqlServerRetrievalJob(
-            query="query",
-            engine=MagicMock(),
             config=environment.config,
             full_feature_names=False,
         )
@@ -257,3 +247,28 @@ def test_to_arrow_timeout(retrieval_job, timeout: Optional[int]):
     with patch.object(retrieval_job, "_to_arrow_internal") as mock_to_arrow_internal:
         retrieval_job.to_arrow(timeout=timeout)
         mock_to_arrow_internal.assert_called_once_with(timeout=timeout)
+
+
+@pytest.mark.parametrize(
+    "repo_path, uri, expected",
+    [
+        # Remote URI - Should return as-is
+        (
+            "/some/repo",
+            "s3://bucket-name/file.parquet",
+            "s3://bucket-name/file.parquet",
+        ),
+        # Absolute Path - Should return as-is
+        ("/some/repo", "/abs/path/file.parquet", "/abs/path/file.parquet"),
+        # Relative Path with repo_path - Should combine
+        ("/some/repo", "data/output.parquet", "/some/repo/data/output.parquet"),
+        # Relative Path without repo_path - Should return absolute path
+        (None, "C:/path/to/file.parquet", "C:/path/to/file.parquet"),
+    ],
+    ids=["s3_uri", "absolute_path", "relative_path", "windows_path"],
+)
+def test_get_uri_for_file_path(
+    repo_path: Optional[str], uri: str, expected: str
+) -> None:
+    result = FileSource.get_uri_for_file_path(repo_path=repo_path, uri=uri)
+    assert result == expected, f"Expected {expected}, but got {result}"

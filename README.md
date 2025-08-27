@@ -1,76 +1,5 @@
 <!--Do not modify this file. It is auto-generated from a template (infra/templates/README.md.jinja2)-->
 
-## Internal Ki guidelines
-
- ### Contributing flow
- 1. Contribute change normally through feature branch created from current head of master branch with open PR to origin remote master branch and keep feature branch
- 2. Ensure that similar fix is not already available in newer release of feast. If it is, finish this flow and switch to updating Ki's internal version of feast (potentially recerting fix from step 1 afterwards)
- 3. Decide if given change is specific to Ki's combination of environment and non-standard approach or is it more of universal feast improvement
- 4. Leave ample comments in PR to inform decisions of next person doing feast upgrade from upstream (if this change should be discarded then, is it purely internal one, is it temporary fix etc.)
- 5. If this change is deemed something worth contributing back: rebase feature branch using master branch of original feast repo a.k.a. upstream
- ```
- git checkout {feature-branch}
- git rebase upstream/master
- ```
- 6. If upstream remote is not set for this repository on your local machine use:
- ```
- git remote add upstream https://github.com/feast-dev/feast
- ```
- 7. Ensure upstream remote is set up properly `git remote -v` will result in
- ```
- origin	https://github.com/Ki-Insurance/feast.git (fetch)
- origin	https://github.com/Ki-Insurance/feast.git (push)
- upstream	https://github.com/feast-dev/feast (fetch)
- upstream	https://github.com/feast-dev/feast (push)
- ```
- 8. After resolving any conflicts in rebase, push your branch to upstream
- ```
- git push upstream {feature-branch}
- ```
- 9. Continue with normal contribution to feast process as described in feast readme, but include link to such PR in closed PR to internal origin remote Ki's master branch from step 1. 
-
- ### Updating to newer version
- 1. Note version of feast release from last PR rebasing origin master with upstream; it's also available in section below
- 2. If branch with newer release is available in upstream, start update. Currently format of these branches is as follows: `v0.{version}-branch`. Sometimes there is no new branch but just a tag on master branch: that's how 0.39 was released
- 3. Create new feature branch from origin master and merge newest upstream release branch or branch local branch created from release tag ``git checkout -b {name-of-branch} tags/{release-tag}``. DO NOT REBASE: it heavily obscures history of our changes and makes it harder to properly revert and redo these changes which is likely occurence for bigger feast updates (expect many breaking changes)
- 4. Resolve conflicts and run lint from makefile. In most cases resolving these conflicts will require contacting authors of our internal fixes for context, but as general rule of thumb take newest version of feast and reapply Ki changes when possible/relevant. Any requirements in setup.py should default to newer version (most probably from upstream)
- 5. Create PR to origin master with said update branch
- 6. Use commit hash to test potential new version basic functionality in feature-store app/feature-store project. NOTE that to test anything you first need to create new ki-features (same feature-store repo) lib version and merge it so it can be used for local feature store tests. Feature store can be tested locally with ``make build-base-local`` available command and then adjusting docker files of all containers used in deployment to point to that local image. Local tests do not ensure that such release will work as historically a lot of issues could be seen only in dev (connection bleed, breaking changes with no proper registry migration approach etc.) 
- 7. Merge to master and include in feature-store for more extensive tests on dev 
-
- ### Alternative approach to updating
- 1. Considering small amount of Ki specific changes and potential to introduce hard to track or resolve issues during conflict resolution in merge, there is alternative approach.
- 2. Copy over newest release branch or create local one from release tag. Reapply manually all the Ki specific changes on top of it like for example in this commit: https://github.com/Ki-Insurance/feast/pull/32/commits/d4ab29e4249bfc66119b505bc65a461e20ccee42
- 3. Merge origin master into aforementioned release branch with Ki changes. Ensure that freshly prepared release version will have priority in resolving conflicts
- ```
- git merge --strategy=ours origin/master
- ```
- 4. Advice: Create aforementioned newest version branch and apply Ki changes f.e. ``0.39-update`` then checkout new branch from that one f.e. ``0.39-update-merge-test``, then merge master into the merge test branch. If everything resolved properly ``0.39-update`` and ``0.39-update-merge-test`` should have no diff but ``0.39-update-merge-test`` will now have a history allowing it to be merged without conflict into ``origin/master`` 
- 5. Merge such prepared version into master. It can be tested on dev deployment of feature-store before merging in this repo
- 6. Some considerations for testing and what needs to be done:
- - feature store deployment to dev won't show any issues with communication with models as they are inherently pointing to UAT deployment so to properly check everything works, deploy feature store with new version of feast to UAT then check ki-automation @algoRelease set of tests
- - most probably if there are any breaking or bigger changes, there will be models for which all or some tests fail. General approach is to use new version of ki-features lib in these model deployments as hashes of feast version in feature store deployment and ki feature lib used in models need to be the same. There is overall push for model deployments to use newr version of libraries that no longer require ki-features and in turn are not vulnerable to updates of this feast repo.
-
- ## Current state
- Feast version from upstream: 0.39 (created from release tag as there was no branch)
- 
- Ki changes applied on top of feast version:
- 1. https://github.com/Ki-Insurance/feast/pull/32/commits/d4ab29e4249bfc66119b505bc65a461e20ccee42
- - expiriation for tables (bytewax materialization specific fix - should be kept as long as bytewax materialziation is used)
- - added handling for date types
- - provide types for on demand features - more in https://github.com/Ki-Insurance/feast/pull/13 and https://ki-insurance.atlassian.net/browse/DUG-121 - as source code was changed extensively around this logic, it is more of reintroduction of fix in new place
- 2. https://github.com/Ki-Insurance/feast/pull/32/commits/a4a90164f3b2c5a660f1e4d022286d507410029c
- - introduction of mode for on-demand features was assuming seamless update but for our specific case there was a problem: definition in registry is kept in protobuf with non-nullable field for mode so it never falled into defaulting cases; this change allows seamless update in our environments without need to manually interfere in or completely recreate registry; should be discarded on next update
- - small change in how async refresh is started; considering how registry refresh is written, it's creating new sql engine (and in turn connection pool) with every refresh; previously it was not a problem because old threads with said engines and connection pools were cleaned right away; with new approach using @asynccontextmanager said previous threads with engines (and connection pools) were not reclaimed automatically leading to connections bleed up to the registry limit
- 3. https://github.com/Ki-Insurance/feast/pull/20
- - our own implementation of async feature retrieval used in python sdk form by feature connector service
- 4. https://github.com/Ki-Insurance/feast/pull/34
- - comments for reasoning in change
- 5. https://github.com/Ki-Insurance/feast/pull/36/files
- - fix for when ODF input values typing can't be inferred for internal format transformations
-
- <br/><br/><br/> 
-
 <p align="center">
     <a href="https://feast.dev/">
       <img src="docs/assets/feast_logo.png" width="550">
@@ -78,14 +7,19 @@
 </p>
 <br />
 
-[![unit-tests](https://github.com/feast-dev/feast/actions/workflows/unit_tests.yml/badge.svg?branch=master&event=push)](https://github.com/feast-dev/feast/actions/workflows/unit_tests.yml)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/feast)](https://pypi.org/project/feast/)
+[![GitHub contributors](https://img.shields.io/github/contributors/feast-dev/feast)](https://github.com/feast-dev/feast/graphs/contributors)
+[![unit-tests](https://github.com/feast-dev/feast/actions/workflows/unit_tests.yml/badge.svg?branch=master)](https://github.com/feast-dev/feast/actions/workflows/unit_tests.yml)
 [![integration-tests-and-build](https://github.com/feast-dev/feast/actions/workflows/master_only.yml/badge.svg?branch=master&event=push)](https://github.com/feast-dev/feast/actions/workflows/master_only.yml)
 [![java-integration-tests](https://github.com/feast-dev/feast/actions/workflows/java_master_only.yml/badge.svg?branch=master&event=push)](https://github.com/feast-dev/feast/actions/workflows/java_master_only.yml)
 [![linter](https://github.com/feast-dev/feast/actions/workflows/linter.yml/badge.svg?branch=master&event=push)](https://github.com/feast-dev/feast/actions/workflows/linter.yml)
 [![Docs Latest](https://img.shields.io/badge/docs-latest-blue.svg)](https://docs.feast.dev/)
-[![Python API](https://img.shields.io/readthedocs/feast/master?label=Python%20API)](http://rtd.feast.dev/)
+[![Python API](https://img.shields.io/badge/docs-latest-brightgreen.svg)](http://rtd.feast.dev/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](https://github.com/feast-dev/feast/blob/master/LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/feast-dev/feast.svg?style=flat&sort=semver&color=blue)](https://github.com/feast-dev/feast/releases)
+
+## Join us on Slack!
+👋👋👋 [Come say hi on Slack!](https://communityinviter.com/apps/feastopensource/feast-the-open-source-feature-store)
 
 ## Overview
 
@@ -217,6 +151,9 @@ The list below contains the functionality that contributors are planning to deve
 
 * We welcome contribution to all items in the roadmap!
 
+* **Natural Language Processing**
+  * [x] Vector Search (Alpha release. See [RFC](https://docs.google.com/document/d/18IWzLEA9i2lDWnbfbwXnMCg3StlqaLVI-uRpQjr_Vos/edit#heading=h.9gaqqtox9jg6))
+  * [ ] [Enhanced Feature Server and SDK for native support for NLP](https://github.com/feast-dev/feast/issues/4964)
 * **Data Sources**
   * [x] [Snowflake source](https://docs.feast.dev/reference/data-sources/snowflake)
   * [x] [Redshift source](https://docs.feast.dev/reference/data-sources/redshift)
@@ -226,6 +163,7 @@ The list below contains the functionality that contributors are planning to deve
   * [x] [Hive (community plugin)](https://github.com/baineng/feast-hive)
   * [x] [Postgres (contrib plugin)](https://docs.feast.dev/reference/data-sources/postgres)
   * [x] [Spark (contrib plugin)](https://docs.feast.dev/reference/data-sources/spark)
+  * [x] [Couchbase (contrib plugin)](https://docs.feast.dev/reference/data-sources/couchbase)
   * [x] Kafka / Kinesis sources (via [push support into the online store](https://docs.feast.dev/reference/data-sources/push))
 * **Offline Stores**
   * [x] [Snowflake](https://docs.feast.dev/reference/offline-stores/snowflake)
@@ -236,6 +174,7 @@ The list below contains the functionality that contributors are planning to deve
   * [x] [Postgres (contrib plugin)](https://docs.feast.dev/reference/offline-stores/postgres)
   * [x] [Trino (contrib plugin)](https://github.com/Shopify/feast-trino)
   * [x] [Spark (contrib plugin)](https://docs.feast.dev/reference/offline-stores/spark)
+  * [x] [Couchbase (contrib plugin)](https://docs.feast.dev/reference/offline-stores/couchbase)
   * [x] [In-memory / Pandas](https://docs.feast.dev/reference/offline-stores/file)
   * [x] [Custom offline store support](https://docs.feast.dev/how-to-guides/customizing-feast/adding-a-new-offline-store)
 * **Online Stores**
@@ -250,11 +189,14 @@ The list below contains the functionality that contributors are planning to deve
   * [x] [Azure Cache for Redis (community plugin)](https://github.com/Azure/feast-azure)
   * [x] [Postgres (contrib plugin)](https://docs.feast.dev/reference/online-stores/postgres)
   * [x] [Cassandra / AstraDB (contrib plugin)](https://docs.feast.dev/reference/online-stores/cassandra)
+  * [x] [ScyllaDB (contrib plugin)](https://docs.feast.dev/reference/online-stores/scylladb)
+  * [x] [Couchbase (contrib plugin)](https://docs.feast.dev/reference/online-stores/couchbase)
   * [x] [Custom online store support](https://docs.feast.dev/how-to-guides/customizing-feast/adding-support-for-a-new-online-store)
 * **Feature Engineering**
-  * [x] On-demand Transformations (Beta release. See [RFC](https://docs.google.com/document/d/1lgfIw0Drc65LpaxbUu49RCeJgMew547meSJttnUqz7c/edit#))
+  * [x] On-demand Transformations (On Read) (Beta release. See [RFC](https://docs.google.com/document/d/1lgfIw0Drc65LpaxbUu49RCeJgMew547meSJttnUqz7c/edit#))
   * [x] Streaming Transformations (Alpha release. See [RFC](https://docs.google.com/document/d/1UzEyETHUaGpn0ap4G82DHluiCj7zEbrQLkJJkKSv4e8/edit))
   * [ ] Batch transformation (In progress. See [RFC](https://docs.google.com/document/d/1964OkzuBljifDvkV-0fakp2uaijnVzdwWNGdz7Vz50A/edit))
+  * [x] On-demand Transformations (On Write) (Beta release. See [GitHub Issue](https://github.com/feast-dev/feast/issues/4376))
 * **Streaming**
   * [x] [Custom streaming ingestion job support](https://docs.feast.dev/how-to-guides/customizing-feast/creating-a-custom-provider)
   * [x] [Push based streaming data ingestion to online store](https://docs.feast.dev/reference/data-sources/push)
@@ -267,6 +209,8 @@ The list below contains the functionality that contributors are planning to deve
   * [x] [Python feature server](https://docs.feast.dev/reference/feature-servers/python-feature-server)
   * [x] [Java feature server (alpha)](https://github.com/feast-dev/feast/blob/master/infra/charts/feast/README.md)
   * [x] [Go feature server (alpha)](https://docs.feast.dev/reference/feature-servers/go-feature-server)
+  * [x] [Offline Feature Server (alpha)](https://docs.feast.dev/reference/feature-servers/offline-feature-server)
+  * [x] [Registry server (alpha)](https://github.com/feast-dev/feast/blob/master/docs/reference/feature-servers/registry-server.md)
 * **Data Quality Management (See [RFC](https://docs.google.com/document/d/110F72d4NTv80p35wDSONxhhPBqWRwbZXG4f9mNEMd98/edit))**
   * [x] Data profiling and validation (Great Expectations)
 * **Feature Discovery and Governance**
@@ -276,6 +220,7 @@ The list below contains the functionality that contributors are planning to deve
   * [x] Amundsen integration (see [Feast extractor](https://github.com/amundsen-io/amundsen/blob/main/databuilder/databuilder/extractor/feast_extractor.py))
   * [x] DataHub integration (see [DataHub Feast docs](https://datahubproject.io/docs/generated/ingestion/sources/feast/))
   * [x] Feast Web UI (Beta release. See [docs](https://docs.feast.dev/reference/alpha-web-ui))
+  * [ ] Feast Lineage Explorer
 
 
 ## 🎓 Important Resources
@@ -283,6 +228,7 @@ The list below contains the functionality that contributors are planning to deve
 Please refer to the official documentation at [Documentation](https://docs.feast.dev/)
  * [Quickstart](https://docs.feast.dev/getting-started/quickstart)
  * [Tutorials](https://docs.feast.dev/tutorials/tutorials-overview)
+ * [Examples](https://github.com/feast-dev/feast/tree/master/examples)
  * [Running Feast with Snowflake/GCP/AWS](https://docs.feast.dev/how-to-guides/feast-snowflake-gcp-aws)
  * [Change Log](https://github.com/feast-dev/feast/blob/master/CHANGELOG.md)
 
@@ -291,6 +237,18 @@ Feast is a community project and is still under active development. Please have 
 - [Contribution Process for Feast](https://docs.feast.dev/project/contributing)
 - [Development Guide for Feast](https://docs.feast.dev/project/development-guide)
 - [Development Guide for the Main Feast Repository](./CONTRIBUTING.md)
+
+## 🌟 GitHub Star History
+<p align="center">
+<a href="https://star-history.com/#feast-dev/feast&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=feast-dev/feast&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=feast-dev/feast&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=feast-dev/feast&type=Date" />
+ </picture>
+</a>
+</p>
+
 
 ## ✨ Contributors
 

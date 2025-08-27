@@ -5,12 +5,15 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
+from subprocess import Popen
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import yaml
+from _pytest.mark import MarkDecorator
 from minio import Minio
 from testcontainers.core.generic import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
@@ -20,8 +23,8 @@ from feast import FileSource, RepoConfig
 from feast.data_format import DeltaFormat, ParquetFormat
 from feast.data_source import DataSource
 from feast.feature_logging import LoggingDestination
+from feast.infra.offline_stores.dask import DaskOfflineStoreConfig
 from feast.infra.offline_stores.duckdb import DuckDBOfflineStoreConfig
-from feast.infra.offline_stores.file import FileOfflineStoreConfig
 from feast.infra.offline_stores.file_source import (
     FileLoggingDestination,
     SavedDatasetFileStorage,
@@ -32,7 +35,9 @@ from feast.wait import wait_retry_backoff  # noqa: E402
 from tests.integration.feature_repos.universal.data_source_creator import (
     DataSourceCreator,
 )
+from tests.utils.auth_permissions_util import include_auth_config
 from tests.utils.http_server import check_port_open, free_port  # noqa: E402
+from tests.utils.ssl_certifcates_util import generate_self_signed_cert
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +89,7 @@ class FileDataSourceCreator(DataSourceCreator):
         return f"{self.project_name}.{suffix}"
 
     def create_offline_store_config(self) -> FeastConfigBaseModel:
-        return FileOfflineStoreConfig()
+        return DaskOfflineStoreConfig()
 
     def create_logged_features_destination(self) -> LoggingDestination:
         d = tempfile.mkdtemp(prefix=self.project_name)
@@ -334,7 +339,7 @@ class S3FileDataSourceCreator(DataSourceCreator):
         return f"{suffix}"
 
     def create_offline_store_config(self) -> FeastConfigBaseModel:
-        return FileOfflineStoreConfig()
+        return DaskOfflineStoreConfig()
 
     def teardown(self):
         self.minio.stop()
@@ -367,7 +372,11 @@ class RemoteOfflineStoreDataSourceCreator(FileDataSourceCreator):
     def __init__(self, project_name: str, *args, **kwargs):
         super().__init__(project_name)
         self.server_port: int = 0
-        self.proc: Optional[subprocess.Popen] = None
+        self.proc: Optional[Popen[bytes]] = None
+
+    @staticmethod
+    def test_markers() -> list[MarkDecorator]:
+        return [pytest.mark.rbac_remote_integration_test]
 
     def setup(self, registry: RegistryConfig):
         parent_offline_config = super().create_offline_store_config()
@@ -381,13 +390,14 @@ class RemoteOfflineStoreDataSourceCreator(FileDataSourceCreator):
 
         repo_path = Path(tempfile.mkdtemp())
         with open(repo_path / "feature_store.yaml", "w") as outfile:
-            yaml.dump(config.dict(by_alias=True), outfile)
+            yaml.dump(config.model_dump(by_alias=True), outfile)
+        repo_path = repo_path.resolve()
 
         self.server_port = free_port()
         host = "0.0.0.0"
         cmd = [
             "feast",
-            "-c" + str(repo_path.resolve()),
+            "-c" + str(repo_path),
             "serve_offline",
             "--host",
             host,
@@ -407,11 +417,169 @@ class RemoteOfflineStoreDataSourceCreator(FileDataSourceCreator):
         )
         return "grpc+tcp://{}:{}".format(host, self.server_port)
 
+
+class RemoteOfflineTlsStoreDataSourceCreator(FileDataSourceCreator):
+    def __init__(self, project_name: str, *args, **kwargs):
+        super().__init__(project_name)
+        self.server_port: int = 0
+        self.proc: Optional[Popen[bytes]] = None
+
+    @staticmethod
+    def test_markers() -> list[MarkDecorator]:
+        return [pytest.mark.rbac_remote_integration_test]
+
+    def setup(self, registry: RegistryConfig):
+        parent_offline_config = super().create_offline_store_config()
+        config = RepoConfig(
+            project=self.project_name,
+            provider="local",
+            offline_store=parent_offline_config,
+            registry=registry.path,
+            entity_key_serialization_version=2,
+        )
+
+        certificates_path = tempfile.mkdtemp()
+        tls_key_path = os.path.join(certificates_path, "key.pem")
+        self.tls_cert_path = os.path.join(certificates_path, "cert.pem")
+        generate_self_signed_cert(cert_path=self.tls_cert_path, key_path=tls_key_path)
+
+        repo_path = Path(tempfile.mkdtemp())
+        with open(repo_path / "feature_store.yaml", "w") as outfile:
+            yaml.dump(config.model_dump(by_alias=True), outfile)
+        repo_path = repo_path.resolve()
+
+        self.server_port = free_port()
+        host = "0.0.0.0"
+        cmd = [
+            "feast",
+            "-c" + str(repo_path),
+            "serve_offline",
+            "--host",
+            host,
+            "--port",
+            str(self.server_port),
+            "--key",
+            str(tls_key_path),
+            "--cert",
+            str(self.tls_cert_path),
+        ]
+        self.proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+
+        _time_out_sec: int = 60
+        # Wait for server to start
+        wait_retry_backoff(
+            lambda: (None, check_port_open(host, self.server_port)),
+            timeout_secs=_time_out_sec,
+            timeout_msg=f"Unable to start the feast remote offline server in {_time_out_sec} seconds at port={self.server_port}",
+        )
+        return "grpc+tls://{}:{}".format(host, self.server_port)
+
     def create_offline_store_config(self) -> FeastConfigBaseModel:
-        self.remote_offline_store_config = RemoteOfflineStoreConfig(
+        remote_offline_store_config = RemoteOfflineStoreConfig(
+            type="remote",
+            host="0.0.0.0",
+            port=self.server_port,
+            scheme="https",
+            cert=self.tls_cert_path,
+        )
+        return remote_offline_store_config
+
+    def teardown(self):
+        super().teardown()
+        if self.proc is not None:
+            self.proc.kill()
+
+            # wait server to free the port
+            wait_retry_backoff(
+                lambda: (
+                    None,
+                    not check_port_open("localhost", self.server_port),
+                ),
+                timeout_secs=30,
+            )
+
+
+class RemoteOfflineOidcAuthStoreDataSourceCreator(FileDataSourceCreator):
+    def __init__(self, project_name: str, *args, **kwargs):
+        super().__init__(project_name)
+        if "fixture_request" in kwargs:
+            request = kwargs["fixture_request"]
+            self.keycloak_url = request.getfixturevalue("start_keycloak_server")
+        else:
+            raise RuntimeError(
+                "fixture_request object is not passed to inject keycloak fixture dynamically."
+            )
+        auth_config_template = """
+auth:
+  type: oidc
+  client_id: feast-integration-client
+  auth_discovery_url: {keycloak_url}/realms/master/.well-known/openid-configuration
+"""
+        self.auth_config = auth_config_template.format(keycloak_url=self.keycloak_url)
+        self.server_port: int = 0
+        self.proc = None
+
+    @staticmethod
+    def xdist_groups() -> list[str]:
+        return ["keycloak"]
+
+    @staticmethod
+    def test_markers() -> list[MarkDecorator]:
+        return [pytest.mark.rbac_remote_integration_test]
+
+    def setup(self, registry: RegistryConfig):
+        parent_offline_config = super().create_offline_store_config()
+        config = RepoConfig(
+            project=self.project_name,
+            provider="local",
+            offline_store=parent_offline_config,
+            registry=registry.path,
+            entity_key_serialization_version=2,
+        )
+
+        repo_base_path = Path(tempfile.mkdtemp())
+        with open(repo_base_path / "feature_store.yaml", "w") as outfile:
+            yaml.dump(config.model_dump(by_alias=True), outfile)
+        repo_path = str(repo_base_path.resolve())
+
+        include_auth_config(
+            file_path=f"{repo_path}/feature_store.yaml", auth_config=self.auth_config
+        )
+
+        self.server_port = free_port()
+        host = "0.0.0.0"
+        cmd = [
+            "feast",
+            "-c" + repo_path,
+            "serve_offline",
+            "--host",
+            host,
+            "--port",
+            str(self.server_port),
+        ]
+        self.proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )  # type: ignore
+
+        _time_out_sec: int = 60
+        # Wait for server to start
+        wait_retry_backoff(
+            lambda: (None, check_port_open(host, self.server_port)),
+            timeout_secs=_time_out_sec,
+            timeout_msg=f"Unable to start the feast remote offline server in {_time_out_sec} seconds at port={self.server_port}",
+        )
+        return "grpc+tcp://{}:{}".format(host, self.server_port)
+
+    def create_offline_store_config(self) -> FeastConfigBaseModel:
+        remote_offline_store_config = RemoteOfflineStoreConfig(
             type="remote", host="0.0.0.0", port=self.server_port
         )
-        return self.remote_offline_store_config
+        return remote_offline_store_config
+
+    def get_keycloak_url(self):
+        return self.keycloak_url
 
     def teardown(self):
         super().teardown()

@@ -1,6 +1,6 @@
 import contextlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Callable,
@@ -19,7 +19,6 @@ import pandas as pd
 import pyarrow
 import pyarrow as pa
 from pydantic import StrictStr
-from pytz import utc
 
 from feast import OnDemandFeatureView
 from feast.data_source import DataSource
@@ -37,6 +36,7 @@ from feast.infra.offline_stores.offline_store import (
     RetrievalJob,
     RetrievalMetadata,
 )
+from feast.infra.offline_stores.offline_utils import get_timestamp_filter_sql
 from feast.infra.registry.base_registry import BaseRegistry
 from feast.infra.utils import aws_utils
 from feast.repo_config import FeastConfigBaseModel, RepoConfig
@@ -100,8 +100,8 @@ class AthenaOfflineStore(OfflineStore):
         athena_client = aws_utils.get_athena_data_client(config.offline_store.region)
         s3_resource = aws_utils.get_s3_resource(config.offline_store.region)
 
-        start_date = start_date.astimezone(tz=utc)
-        end_date = end_date.astimezone(tz=utc)
+        start_date = start_date.astimezone(tz=timezone.utc)
+        end_date = end_date.astimezone(tz=timezone.utc)
 
         query = f"""
             SELECT
@@ -111,8 +111,8 @@ class AthenaOfflineStore(OfflineStore):
                 SELECT {field_string},
                 ROW_NUMBER() OVER({partition_by_join_key_string} ORDER BY {timestamp_desc_string}) AS _feast_row
                 FROM {from_expression}
-                WHERE {timestamp_field} BETWEEN TIMESTAMP '{start_date.strftime('%Y-%m-%d %H:%M:%S')}' AND TIMESTAMP '{end_date.strftime('%Y-%m-%d %H:%M:%S')}'
-                {"AND "+date_partition_column+" >= '"+start_date.strftime('%Y-%m-%d')+"' AND "+date_partition_column+" <= '"+end_date.strftime('%Y-%m-%d')+"' " if date_partition_column != "" and date_partition_column is not None else ''}
+                WHERE {timestamp_field} BETWEEN TIMESTAMP '{start_date.strftime("%Y-%m-%d %H:%M:%S")}' AND TIMESTAMP '{end_date.strftime("%Y-%m-%d %H:%M:%S")}'
+                {"AND " + date_partition_column + " >= '" + start_date.strftime("%Y-%m-%d") + "' AND " + date_partition_column + " <= '" + end_date.strftime("%Y-%m-%d") + "' " if date_partition_column != "" and date_partition_column is not None else ""}
             )
             WHERE _feast_row = 1
             """
@@ -132,15 +132,19 @@ class AthenaOfflineStore(OfflineStore):
         join_key_columns: List[str],
         feature_name_columns: List[str],
         timestamp_field: str,
-        start_date: datetime,
-        end_date: datetime,
+        created_timestamp_column: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
     ) -> RetrievalJob:
         assert isinstance(config.offline_store, AthenaOfflineStoreConfig)
         assert isinstance(data_source, AthenaSource)
         from_expression = data_source.get_table_query_string(config)
 
+        timestamp_fields = [timestamp_field]
+        if created_timestamp_column:
+            timestamp_fields.append(created_timestamp_column)
         field_string = ", ".join(
-            join_key_columns + feature_name_columns + [timestamp_field]
+            join_key_columns + feature_name_columns + timestamp_fields
         )
 
         athena_client = aws_utils.get_athena_data_client(config.offline_store.region)
@@ -148,11 +152,30 @@ class AthenaOfflineStore(OfflineStore):
 
         date_partition_column = data_source.date_partition_column
 
+        start_date_str = None
+        if start_date:
+            start_date_str = start_date.astimezone(tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S.%f"
+            )[:-3]
+        end_date_str = None
+        if end_date:
+            end_date_str = end_date.astimezone(tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S.%f"
+            )[:-3]
+
+        timestamp_filter = get_timestamp_filter_sql(
+            start_date_str,
+            end_date_str,
+            timestamp_field,
+            date_partition_column,
+            cast_style="raw",
+            quote_fields=False,
+        )
+
         query = f"""
             SELECT {field_string}
             FROM {from_expression}
-            WHERE {timestamp_field} BETWEEN TIMESTAMP '{start_date.astimezone(tz=utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}' AND TIMESTAMP '{end_date.astimezone(tz=utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}'
-            {"AND "+date_partition_column+" >= '"+start_date.strftime('%Y-%m-%d')+"' AND "+date_partition_column+" <= '"+end_date.strftime('%Y-%m-%d')+"' " if date_partition_column != "" and date_partition_column is not None else ''}
+            WHERE {timestamp_filter}
         """
 
         return AthenaRetrievalJob(

@@ -51,7 +51,7 @@ const FeatureServiceOverviewTab = () => {
       {isEmpty && <p>No feature service with name: {featureServiceName}</p>}
       {isError && <p>Error loading feature service: {featureServiceName}</p>}
       {isSuccess && data && (
-        <React.Fragment>
+        <EuiFlexGroup direction="column">
           <EuiFlexGroup alignItems="center">
             <EuiFlexItem grow={false}>
               <EuiStat title={`${numFeatures}`} description="Total Features" />
@@ -70,9 +70,7 @@ const FeatureServiceOverviewTab = () => {
             {data?.meta?.lastUpdatedTimestamp ? (
               <EuiFlexItem>
                 <EuiStat
-                  title={`${toDate(data?.meta?.lastUpdatedTimestamp!).toLocaleDateString(
-                    "en-CA"
-                  )}`}
+                  title={`${toDate(data?.meta?.lastUpdatedTimestamp!).toLocaleDateString("en-CA")}`}
                   description="Last updated"
                 />
               </EuiFlexItem>
@@ -109,7 +107,7 @@ const FeatureServiceOverviewTab = () => {
                     tags={data.spec.tags}
                     createLink={(key, value) => {
                       return (
-                        `${process.env.PUBLIC_URL || ""}/p/${projectName}/feature-service?` +
+                        `/p/${projectName}/feature-service?` +
                         encodeSearchQueryString(`${key}:${value}`)
                       );
                     }}
@@ -133,7 +131,7 @@ const FeatureServiceOverviewTab = () => {
                             color="primary"
                             onClick={() => {
                               navigate(
-                                `${process.env.PUBLIC_URL || ""}/p/${projectName}/entity/${entity.name}`
+                                `/p/${projectName}/entity/${entity.name}`,
                               );
                             }}
                             onClickAriaLabel={entity.name}
@@ -157,9 +155,11 @@ const FeatureServiceOverviewTab = () => {
                 <EuiHorizontalRule margin="xs" />
                 {data?.spec?.features?.length! > 0 ? (
                   <FeatureViewEdgesList
-                    fvNames={data?.spec?.features?.map((f) => {
-                      return f.featureViewName!;
-                    })!}
+                    fvNames={
+                      data?.spec?.features?.map((f) => {
+                        return f.featureViewName!;
+                      })!
+                    }
                   />
                 ) : (
                   <EuiText>No feature views in this feature service</EuiText>
@@ -167,7 +167,7 @@ const FeatureServiceOverviewTab = () => {
               </EuiPanel>
             </EuiFlexItem>
           </EuiFlexGroup>
-        </React.Fragment>
+        </EuiFlexGroup>
       )}
     </React.Fragment>
   );
