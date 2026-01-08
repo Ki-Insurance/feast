@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 from google.protobuf.timestamp_pb2 import Timestamp
 
+from feast.errors import InvalidEntityDataError
 from feast.protos.feast.types.Value_pb2 import (
     BoolList,
     BytesList,
@@ -46,7 +47,6 @@ from feast.protos.feast.types.Value_pb2 import (
     StringList,
 )
 from feast.protos.feast.types.Value_pb2 import Value as ProtoValue
-from feast.errors import InvalidEntityDataError
 from feast.value_type import ListType, ValueType
 
 if TYPE_CHECKING:
