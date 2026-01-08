@@ -33,6 +33,7 @@ from feast.errors import (
     EntityNotFoundException,
     FeatureNameCollisionError,
     FeatureViewNotFoundException,
+    InvalidEntityDataError,
     RequestDataNotFoundInEntityRowsException,
 )
 from feast.protos.feast.serving.ServingService_pb2 import (
@@ -568,6 +569,26 @@ def _get_unique_entities(
         entity_name_to_join_key_map,
         join_key_values,
     )
+
+    # Check if all required entity keys were provided for this feature view.
+    expected_keys = [
+        entity_name_to_join_key_map[entity_name] for entity_name in table.entities
+    ]
+    provided_keys = list(join_key_values.keys())
+    matched_keys = list(table_entity_values.keys())
+
+    if not matched_keys:
+        raise InvalidEntityDataError(
+            f"None of the provided entity keys {provided_keys} match the required "
+            f"entity keys {expected_keys} for feature view '{table.name}'"
+        )
+
+    if len(matched_keys) < len(expected_keys):
+        missing_keys = [k for k in expected_keys if k not in matched_keys]
+        raise InvalidEntityDataError(
+            f"Missing required entity keys {missing_keys} for feature view '{table.name}'. "
+            f"Provided: {matched_keys}, Required: {expected_keys}"
+        )
 
     # Convert back to rowise.
     keys = table_entity_values.keys()

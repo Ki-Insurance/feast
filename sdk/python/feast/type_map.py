@@ -46,6 +46,7 @@ from feast.protos.feast.types.Value_pb2 import (
     StringList,
 )
 from feast.protos.feast.types.Value_pb2 import Value as ProtoValue
+from feast.errors import InvalidEntityDataError
 from feast.value_type import ListType, ValueType
 
 if TYPE_CHECKING:
@@ -444,13 +445,15 @@ def _python_value_to_proto_value(
                 # Numpy convert 0 to int. However, in the feature view definition, the type of column may be a float.
                 # So, if value is 0, type validation must pass if scalar_types are either int or float.
                 allowed_types = {np.int64, int, np.float64, float}
-                assert (
-                    type(sample) in allowed_types
-                ), f"Type `{type(sample)}` not in {allowed_types}"
+                if type(sample) not in allowed_types:
+                    raise InvalidEntityDataError(
+                        f"Entity value has invalid type: expected one of {allowed_types}, got {type(sample)}"
+                    )
             else:
-                assert (
-                    type(sample) in valid_scalar_types
-                ), f"Type `{type(sample)}` not in {valid_scalar_types}"
+                if type(sample) not in valid_scalar_types:
+                    raise InvalidEntityDataError(
+                        f"Entity value has invalid type: expected one of {valid_scalar_types}, got {type(sample)}"
+                    )
         if feast_value_type == ValueType.BOOL:
             # ProtoValue does not support conversion of np.bool_ so we need to convert it to support np.bool_.
             return [
@@ -473,7 +476,12 @@ def _python_value_to_proto_value(
                 if isinstance(value, ProtoValue):
                     out.append(value)
                 elif not pd.isnull(value):
-                    out.append(ProtoValue(**{field_name: func(value)}))
+                    try:
+                        out.append(ProtoValue(**{field_name: func(value)}))
+                    except (ValueError, TypeError) as e:
+                        raise InvalidEntityDataError(
+                            f"Failed to convert entity value '{value}' to {feast_value_type}: {e}"
+                        ) from e
                 else:
                     out.append(ProtoValue())
             return out
