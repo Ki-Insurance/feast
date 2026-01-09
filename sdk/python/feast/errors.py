@@ -427,3 +427,16 @@ class DataFrameSerializationError(Exception):
         super().__init__(
             f"Failed to serialize the provided dictionary into a pandas DataFrame: {input_dict.keys()}"
         )
+
+
+class InvalidEntityDataError(Exception):
+    """Raised when entity data provided to a feature retrieval request is invalid.
+
+    This includes cases like:
+    - Entity key doesn't match the required keys for the feature view
+    - Entity value has wrong type for the expected entity schema
+    - No valid entity keys were provided for the requested feature views
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
