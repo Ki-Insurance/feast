@@ -79,7 +79,9 @@ def test_online_round_trip_with_configured_app_profile():
                 config=repo_config, table=feature_view, entity_keys=[entity_key]
             )
 
-        assert len(mock_table.call_args_list) == 2, "expected one table() call for write, one for read"
+        assert (
+            len(mock_table.call_args_list) == 2
+        ), "expected one table() call for write, one for read"
         for call in mock_table.call_args_list:
             assert call.kwargs["app_profile_id"] == "test-app-profile"
 

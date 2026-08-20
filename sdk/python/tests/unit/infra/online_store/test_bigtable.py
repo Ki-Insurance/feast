@@ -78,7 +78,9 @@ def test_bigtable_online_store_config_defaults_app_profile_to_none():
 
 
 def test_bigtable_online_store_config_accepts_configured_app_profile():
-    config = BigtableOnlineStoreConfig(instance=INSTANCE, app_profile_id="test-app-profile")
+    config = BigtableOnlineStoreConfig(
+        instance=INSTANCE, app_profile_id="test-app-profile"
+    )
     assert config.app_profile_id == "test-app-profile"
 
 
